@@ -34,11 +34,31 @@ const FileCategory = enum {
             .Other => "Other",
         };
     }
+
+    pub fn toDirectoryName(self: FileCategory) []const u8 {
+        return switch (self) {
+            .Documents => "documents",
+            .Images => "images",
+            .Videos => "videos",
+            .Audio => "audio",
+            .Archives => "archives",
+            .Code => "code",
+            .Data => "data",
+            .Configuration => "config",
+            .Other => "misc",
+        };
+    }
 };
 
 const OrganizationPlan = struct {
     categories: std.hash_map.HashMap(FileCategory, std.ArrayList(FileInfo), std.hash_map.AutoContext(FileCategory), 80),
     total_files: usize,
+};
+
+const Config = struct {
+    create_directories: bool = false,
+    dry_run: bool = true,
+    verbose: bool = false,
 };
 
 const usage_text =
@@ -51,12 +71,15 @@ const usage_text =
     \\
     \\Options:
     \\  -h, --help        Display this help message
-    \\  -v, --version     Display version information
+    \\  --version         Display version information
+    \\  -c, --create      Create directories (default: preview only)
+    \\  -d, --dry-run     Show what would happen without doing it
+    \\  -V, --verbose     Enable verbose logging
     \\
     \\Examples:
-    \\  {s} /path/to/project
-    \\  {s} --help
-    \\  {s} --version
+    \\  {s} /path/to/project              # Preview organization
+    \\  {s} --create /path/to/project     # Actually create directories
+    \\  {s} --dry-run --verbose /path     # Verbose preview mode
     \\
 ;
 
@@ -225,7 +248,54 @@ fn categorizeFileByExtension(extension: []const u8) FileCategory {
     return .Other;
 }
 
-fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
+fn createDirectories(allocator: std.mem.Allocator, base_path: []const u8, organization_plan: *const OrganizationPlan, config: *const Config) !void {
+    if (config.verbose) {
+        print("Creating directories in: {s}\n", .{base_path});
+    }
+
+    var iterator = organization_plan.categories.iterator();
+    while (iterator.next()) |entry| {
+        const category = entry.key_ptr.*;
+        const file_list = entry.value_ptr.*;
+
+        if (file_list.items.len == 0) continue;
+
+        const dir_name = category.toDirectoryName();
+
+        // Create full path
+        const full_path = try std.mem.join(allocator, "/", &[_][]const u8{ base_path, dir_name });
+        defer allocator.free(full_path);
+
+        if (config.dry_run) {
+            print("Would create directory: {s} (for {} files)\n", .{ full_path, file_list.items.len });
+        } else if (config.create_directories) {
+            // Try to create directory
+            std.fs.cwd().makeDir(full_path) catch |err| switch (err) {
+                error.PathAlreadyExists => {
+                    if (config.verbose) {
+                        print("Directory already exists: {s}\n", .{full_path});
+                    }
+                },
+                error.AccessDenied => {
+                    printError("Permission denied creating directory");
+                    print("Failed to create: {s}\n", .{full_path});
+                    return err;
+                },
+                else => {
+                    printError("Failed to create directory");
+                    print("Error creating: {s}\n", .{full_path});
+                    return err;
+                },
+            };
+
+            if (config.verbose) {
+                print("Created directory: {s}\n", .{full_path});
+            }
+        }
+    }
+}
+
+fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const Config) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
@@ -302,7 +372,13 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     }
 
     print("\n{s}\n", .{"============================================================"});
-    print("FILE ORGANIZATION PREVIEW\n", .{});
+    if (config.dry_run) {
+        print("FILE ORGANIZATION PREVIEW (DRY RUN)\n", .{});
+    } else if (config.create_directories) {
+        print("FILE ORGANIZATION - CREATING DIRECTORIES\n", .{});
+    } else {
+        print("FILE ORGANIZATION PREVIEW\n", .{});
+    }
     print("{s}\n\n", .{"============================================================"});
 
     print("Total files to organize: {}\n\n", .{organization_plan.total_files});
@@ -362,8 +438,20 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }
     }
 
+    // Create directories if requested
+    createDirectories(allocator, dir_path, &organization_plan, config) catch |err| {
+        printError("Failed to create directories");
+        return err;
+    };
+
     print("\n{s}\n", .{"============================================================"});
-    print("Note: This is a preview. No files have been moved.\n", .{});
+    if (config.dry_run) {
+        print("Note: This is a preview. No directories have been created.\n", .{});
+    } else if (config.create_directories) {
+        print("Directory creation complete.\n", .{});
+    } else {
+        print("Note: This is a preview. No directories have been created.\n", .{});
+    }
     print("{s}\n", .{"============================================================"});
 }
 
@@ -385,6 +473,7 @@ pub fn main() !void {
 
     // Parse arguments
     var directory_path: ?[]const u8 = null;
+    var config = Config{};
     var i: usize = 1;
 
     while (i < args.len) {
@@ -393,9 +482,17 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             printUsage(args[0]);
             return;
-        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
+        } else if (std.mem.eql(u8, arg, "--version")) {
             printVersion();
             return;
+        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--create")) {
+            config.create_directories = true;
+            config.dry_run = false; // Creating implies not dry-run
+        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--dry-run")) {
+            config.dry_run = true;
+            config.create_directories = false; // Dry-run implies not creating
+        } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
+            config.verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             printError("Unknown option");
             print("Try '{s} --help' for more information.\n", .{args[0]});
@@ -429,7 +526,7 @@ pub fn main() !void {
     print("Analyzing directory: {s}\n", .{path});
 
     // List files in the directory
-    listFiles(allocator, path) catch |err| {
+    listFiles(allocator, path, &config) catch |err| {
         if (err == error.AccessDenied) {
             printError("Permission denied while reading directory contents");
         } else {
@@ -514,4 +611,28 @@ test "categorizeFileByExtension" {
     // Test Other/Unknown
     try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".xyz"));
     try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(""));
+}
+
+test "toDirectoryName" {
+    const testing = std.testing;
+
+    // Test directory name mapping
+    try testing.expectEqualStrings("documents", FileCategory.Documents.toDirectoryName());
+    try testing.expectEqualStrings("images", FileCategory.Images.toDirectoryName());
+    try testing.expectEqualStrings("videos", FileCategory.Videos.toDirectoryName());
+    try testing.expectEqualStrings("audio", FileCategory.Audio.toDirectoryName());
+    try testing.expectEqualStrings("archives", FileCategory.Archives.toDirectoryName());
+    try testing.expectEqualStrings("code", FileCategory.Code.toDirectoryName());
+    try testing.expectEqualStrings("data", FileCategory.Data.toDirectoryName());
+    try testing.expectEqualStrings("config", FileCategory.Configuration.toDirectoryName());
+    try testing.expectEqualStrings("misc", FileCategory.Other.toDirectoryName());
+}
+
+test "Config defaults" {
+    const testing = std.testing;
+
+    const config = Config{};
+    try testing.expectEqual(false, config.create_directories);
+    try testing.expectEqual(true, config.dry_run);
+    try testing.expectEqual(false, config.verbose);
 }
