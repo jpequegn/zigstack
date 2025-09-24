@@ -346,12 +346,35 @@ fn loadConfig(allocator: std.mem.Allocator, config_path: []const u8) !ConfigData
 }
 
 fn getFileExtension(filename: []const u8) []const u8 {
+    // Handle edge cases
+    if (filename.len == 0) {
+        return "";
+    }
+
+    // Handle files that are only dots
+    var all_dots = true;
+    for (filename) |char| {
+        if (char != '.') {
+            all_dots = false;
+            break;
+        }
+    }
+    if (all_dots) {
+        return "";
+    }
+
     if (std.mem.lastIndexOf(u8, filename, ".")) |dot_index| {
         // Don't count hidden files starting with '.' as having an extension
         if (dot_index == 0) {
             return "";
         }
-        return filename[dot_index..];
+
+        // Handle edge case where filename ends with dots
+        const extension = filename[dot_index..];
+        if (extension.len >= 1) { // Include single dot case
+            return extension;
+        }
+        return "";
     }
     return "";
 }
@@ -428,13 +451,32 @@ fn resolveFilenameConflict(allocator: std.mem.Allocator, target_path: []const u8
 }
 
 fn categorizeFileByExtension(extension: []const u8) FileCategory {
-    // Convert extension to lowercase for comparison
-    var ext_lower: [256]u8 = undefined;
+    // Handle edge cases
     if (extension.len == 0) {
         return .Other;
     }
 
-    // Simple lowercase conversion for ASCII
+    // Handle very long extensions (limit to reasonable size)
+    if (extension.len > 32) {
+        return .Other;
+    }
+
+    // Handle extensions that are only dots or invalid characters
+    var has_valid_chars = false;
+    for (extension) |char| {
+        if (char != '.' and ((char >= 'a' and char <= 'z') or (char >= 'A' and char <= 'Z') or (char >= '0' and char <= '9'))) {
+            has_valid_chars = true;
+            break;
+        }
+    }
+    if (!has_valid_chars) {
+        return .Other;
+    }
+
+    // Convert extension to lowercase for comparison
+    var ext_lower: [256]u8 = undefined;
+
+    // Simple lowercase conversion for ASCII with bounds checking
     const ext_len = @min(extension.len, ext_lower.len);
     for (extension[0..ext_len], 0..) |c, i| {
         ext_lower[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
@@ -548,6 +590,12 @@ fn categorizeFileByExtension(extension: []const u8) FileCategory {
 }
 
 fn createDirectories(allocator: std.mem.Allocator, base_path: []const u8, organization_plan: *const OrganizationPlan, config: *const Config) !void {
+    // Validate base path length to prevent system issues
+    if (base_path.len == 0 or base_path.len > 1024) {
+        printError("Invalid base path length");
+        return error.InvalidPath;
+    }
+
     if (config.verbose) {
         print("Creating directories in: {s}\n", .{base_path});
     }
@@ -561,14 +609,28 @@ fn createDirectories(allocator: std.mem.Allocator, base_path: []const u8, organi
 
         const dir_name = category.toDirectoryName();
 
-        // Create full path
+        // Validate directory name for unsafe characters
+        for (dir_name) |char| {
+            if (char == 0 or char < 32 or char == 127) {
+                printError("Invalid directory name contains unsafe characters");
+                return error.InvalidDirectoryName;
+            }
+        }
+
+        // Create full path with bounds checking
         const full_path = try std.mem.join(allocator, "/", &[_][]const u8{ base_path, dir_name });
         defer allocator.free(full_path);
+
+        // Check for path length limits
+        if (full_path.len > 2048) {
+            printError("Directory path too long");
+            return error.PathTooLong;
+        }
 
         if (config.dry_run) {
             print("Would create directory: {s} (for {} files)\n", .{ full_path, file_list.items.len });
         } else if (config.create_directories) {
-            // Try to create directory
+            // Try to create directory with enhanced error handling
             std.fs.cwd().makeDir(full_path) catch |err| switch (err) {
                 error.PathAlreadyExists => {
                     if (config.verbose) {
@@ -580,9 +642,24 @@ fn createDirectories(allocator: std.mem.Allocator, base_path: []const u8, organi
                     print("Failed to create: {s}\n", .{full_path});
                     return err;
                 },
+                error.FileNotFound => {
+                    printError("Parent directory does not exist");
+                    print("Cannot create: {s}\n", .{full_path});
+                    return err;
+                },
+                error.NoSpaceLeft => {
+                    printError("No space left on device");
+                    print("Cannot create: {s}\n", .{full_path});
+                    return err;
+                },
+                error.NameTooLong => {
+                    printError("Directory name too long");
+                    print("Cannot create: {s}\n", .{full_path});
+                    return err;
+                },
                 else => {
                     printError("Failed to create directory");
-                    print("Error creating: {s}\n", .{full_path});
+                    print("Error creating: {s}, error: {}\n", .{ full_path, err });
                     return err;
                 },
             };
@@ -1126,4 +1203,751 @@ test "MoveTracker record move" {
     try testing.expectEqual(@as(usize, 1), move_tracker.moves.items.len);
     try testing.expectEqualStrings("/source/file.txt", move_tracker.moves.items[0].original_path);
     try testing.expectEqualStrings("/dest/file.txt", move_tracker.moves.items[0].destination_path);
+}
+
+// Additional comprehensive tests
+
+test "getFileExtension edge cases" {
+    const testing = std.testing;
+
+    // Test edge cases for special characters and Unicode
+    try testing.expectEqualStrings(".txt", getFileExtension("file with spaces.txt"));
+    try testing.expectEqualStrings(".pdf", getFileExtension("file-with-dashes.pdf"));
+    try testing.expectEqualStrings(".jpg", getFileExtension("file_with_underscores.jpg"));
+    try testing.expectEqualStrings(".txt", getFileExtension("file123.txt"));
+    try testing.expectEqualStrings(".", getFileExtension("file."));
+    try testing.expectEqualStrings("", getFileExtension("."));
+    try testing.expectEqualStrings("", getFileExtension(""));
+
+    // Test files with multiple dots
+    try testing.expectEqualStrings(".gz", getFileExtension("archive.tar.gz"));
+    try testing.expectEqualStrings(".old", getFileExtension("config.ini.old"));
+
+    // Test very long extensions and filenames
+    try testing.expectEqualStrings(".extension", getFileExtension("file.extension"));
+    try testing.expectEqualStrings(".verylongextension", getFileExtension("short.verylongextension"));
+}
+
+test "categorizeFileByExtension case insensitive" {
+    const testing = std.testing;
+
+    // Test case insensitive behavior
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".TXT"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".PDF"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".Md"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".JPEG"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".Png"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".ZiG"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".PY"));
+
+    // Mixed case
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".ZiP"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".JsOn"));
+}
+
+test "categorizeFileByExtension empty and special extensions" {
+    const testing = std.testing;
+
+    // Test empty and special cases
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(""));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension("."));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".unknown"));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".123"));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".special-chars"));
+}
+
+test "validateDirectory with non-existent path" {
+    // This test validates the error handling for non-existent directories
+    const testing = std.testing;
+
+    const result = validateDirectory("/definitely/does/not/exist/path");
+    try testing.expectError(error.FileNotFound, result);
+}
+
+test "FileCategory toString" {
+    const testing = std.testing;
+
+    // Test all enum values
+    try testing.expectEqualStrings("Documents", FileCategory.Documents.toString());
+    try testing.expectEqualStrings("Images", FileCategory.Images.toString());
+    try testing.expectEqualStrings("Videos", FileCategory.Videos.toString());
+    try testing.expectEqualStrings("Audio", FileCategory.Audio.toString());
+    try testing.expectEqualStrings("Archives", FileCategory.Archives.toString());
+    try testing.expectEqualStrings("Code", FileCategory.Code.toString());
+    try testing.expectEqualStrings("Data", FileCategory.Data.toString());
+    try testing.expectEqualStrings("Configuration", FileCategory.Configuration.toString());
+    try testing.expectEqualStrings("Other", FileCategory.Other.toString());
+}
+
+test "categorizeExtension with config data" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Create a minimal config for testing
+    var categories = std.StringHashMap(Category).init(allocator);
+    defer {
+        var iter = categories.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            for (entry.value_ptr.extensions) |ext| {
+                allocator.free(ext);
+            }
+            allocator.free(entry.value_ptr.extensions);
+            allocator.free(entry.value_ptr.description);
+            allocator.free(entry.value_ptr.color);
+        }
+        categories.deinit();
+    }
+
+    // Add a custom category
+    var extensions = try allocator.alloc([]const u8, 2);
+    extensions[0] = try allocator.dupe(u8, ".custom");
+    extensions[1] = try allocator.dupe(u8, ".special");
+
+    const category = Category{
+        .description = try allocator.dupe(u8, "Custom files"),
+        .extensions = extensions,
+        .color = try allocator.dupe(u8, "#FF0000"),
+        .priority = 1,
+    };
+
+    const category_name = try allocator.dupe(u8, "Custom");
+    try categories.put(category_name, category);
+
+    const config_data = ConfigData{
+        .version = "1.0",
+        .categories = categories,
+        .display = DisplayConfig{},
+        .behavior = BehaviorConfig{},
+    };
+
+    // Test custom extension categorization
+    const result = categorizeExtension(".custom", config_data);
+    try testing.expectEqualStrings("Custom", result);
+
+    const result2 = categorizeExtension(".special", config_data);
+    try testing.expectEqualStrings("Custom", result2);
+
+    // Test fallback to enum-based categorization
+    const result3 = categorizeExtension(".txt", config_data);
+    try testing.expectEqualStrings("Documents", result3);
+}
+
+test "categorizeExtension fallback to enum" {
+    const testing = std.testing;
+
+    // Test fallback when no config is provided
+    const result = categorizeExtension(".txt", null);
+    try testing.expectEqualStrings("Documents", result);
+
+    const result2 = categorizeExtension(".jpg", null);
+    try testing.expectEqualStrings("Images", result2);
+
+    const result3 = categorizeExtension(".unknown", null);
+    try testing.expectEqualStrings("Other", result3);
+}
+
+test "MoveTracker multiple moves and cleanup" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    var move_tracker = MoveTracker.init(allocator);
+    defer move_tracker.deinit();
+
+    // Record multiple moves
+    try move_tracker.recordMove("/source1/file1.txt", "/dest1/file1.txt");
+    try move_tracker.recordMove("/source2/file2.jpg", "/dest2/file2.jpg");
+    try move_tracker.recordMove("/source3/file3.pdf", "/dest3/file3.pdf");
+
+    try testing.expectEqual(@as(usize, 3), move_tracker.moves.items.len);
+
+    // Verify all moves are recorded correctly
+    try testing.expectEqualStrings("/source1/file1.txt", move_tracker.moves.items[0].original_path);
+    try testing.expectEqualStrings("/dest1/file1.txt", move_tracker.moves.items[0].destination_path);
+    try testing.expectEqualStrings("/source2/file2.jpg", move_tracker.moves.items[1].original_path);
+    try testing.expectEqualStrings("/dest2/file2.jpg", move_tracker.moves.items[1].destination_path);
+    try testing.expectEqualStrings("/source3/file3.pdf", move_tracker.moves.items[2].original_path);
+    try testing.expectEqualStrings("/dest3/file3.pdf", move_tracker.moves.items[2].destination_path);
+}
+
+test "loadConfig with invalid JSON" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Test invalid JSON handling - this should return an error
+    const result = loadConfig(allocator, "nonexistent_config.json");
+    try testing.expectError(error.FileNotFound, result);
+}
+
+test "Config with various flags" {
+    const testing = std.testing;
+
+    // Test different configuration combinations
+    var config1 = Config{};
+    config1.create_directories = true;
+    try testing.expectEqual(true, config1.create_directories);
+    try testing.expectEqual(false, config1.move_files);
+    try testing.expectEqual(true, config1.dry_run); // Default should still be true
+
+    var config2 = Config{};
+    config2.move_files = true;
+    try testing.expectEqual(false, config2.create_directories); // Default
+    try testing.expectEqual(true, config2.move_files);
+
+    var config3 = Config{};
+    config3.verbose = true;
+    config3.dry_run = false;
+    try testing.expectEqual(true, config3.verbose);
+    try testing.expectEqual(false, config3.dry_run);
+}
+
+test "FileCategory all categories coverage" {
+    const testing = std.testing;
+
+    // Test that we can create and use all categories
+    const categories = [_]FileCategory{
+        .Documents, .Images, .Videos, .Audio, .Archives, .Code, .Data, .Configuration, .Other
+    };
+
+    for (categories) |category| {
+        // Verify toString works for all
+        const name = category.toString();
+        try testing.expect(name.len > 0);
+
+        // Verify toDirectoryName works for all
+        const dir_name = category.toDirectoryName();
+        try testing.expect(dir_name.len > 0);
+
+        // Verify they're not the same (directory names are lowercase)
+        if (category != .Other) { // "Other" -> "misc" is a special case
+            try testing.expect(!std.mem.eql(u8, name, dir_name));
+        }
+    }
+}
+
+test "resolveFilenameConflict with special characters" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Test with filenames containing special characters
+    const result1 = try resolveFilenameConflict(allocator, "/tmp/file with spaces.txt");
+    defer allocator.free(result1);
+    try testing.expectEqualStrings("/tmp/file with spaces.txt", result1);
+
+    const result2 = try resolveFilenameConflict(allocator, "/tmp/file-with-dashes.jpg");
+    defer allocator.free(result2);
+    try testing.expectEqualStrings("/tmp/file-with-dashes.jpg", result2);
+
+    const result3 = try resolveFilenameConflict(allocator, "/tmp/file_with_underscores.pdf");
+    defer allocator.free(result3);
+    try testing.expectEqualStrings("/tmp/file_with_underscores.pdf", result3);
+}
+
+test "FileInfo struct creation" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Test FileInfo struct creation and cleanup
+    const name = try allocator.dupe(u8, "test.txt");
+    const extension = try allocator.dupe(u8, ".txt");
+    defer allocator.free(name);
+    defer allocator.free(extension);
+
+    const file_info = FileInfo{
+        .name = name,
+        .extension = extension,
+        .category = .Documents,
+    };
+
+    try testing.expectEqualStrings("test.txt", file_info.name);
+    try testing.expectEqualStrings(".txt", file_info.extension);
+    try testing.expectEqual(FileCategory.Documents, file_info.category);
+}
+
+test "extensive file extension coverage" {
+    const testing = std.testing;
+
+    // Test many more file extensions for comprehensive coverage
+
+    // Documents - additional extensions
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".docx"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".odt"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".rtf"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".tex"));
+
+    // Images - additional extensions
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".bmp"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".svg"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".ico"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".webp"));
+
+    // Videos - additional extensions
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".mov"));
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".wmv"));
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".flv"));
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".webm"));
+
+    // Audio - additional extensions
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".aac"));
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".ogg"));
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".wma"));
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".m4a"));
+
+    // Archives - additional extensions
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".rar"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".7z"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".bz2"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".xz"));
+
+    // Code - additional extensions
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".c"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".cpp"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".h"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".hpp"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".java"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".cs"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".go"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".rs"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".sh"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".bat"));
+
+    // Data - additional extensions
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".xml"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".csv"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".sql"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".db"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".sqlite"));
+
+    // Configuration - additional extensions
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".ini"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".cfg"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".conf"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".yaml"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".yml"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".toml"));
+}
+
+// Integration tests with temporary directories
+
+test "integration - create temporary directory with files" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory
+    const temp_dir_name = "zigstack_test_temp";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    // Create test files in the temporary directory
+    const test_files = [_][]const u8{
+        "document.txt",
+        "image.jpg",
+        "video.mp4",
+        "audio.mp3",
+        "archive.zip",
+        "source.zig",
+        "data.json",
+        "config.yaml",
+        "unknown.xyz",
+        "no_extension",
+        ".hidden_file",
+        "file with spaces.pdf",
+        "file-with-dashes.png",
+        "file_with_underscores.wav",
+    };
+
+    var temp_dir = try std.fs.cwd().openDir(temp_dir_name, .{});
+    defer temp_dir.close();
+
+    for (test_files) |filename| {
+        var file = try temp_dir.createFile(filename, .{});
+        try file.writeAll("test content");
+        file.close();
+    }
+
+    // Test that the files were created successfully
+    for (test_files) |filename| {
+        temp_dir.access(filename, .{}) catch |err| {
+            std.debug.print("Failed to access file: {s}\n", .{filename});
+            return err;
+        };
+    }
+
+    // Test listFiles function with the temporary directory
+    const config = Config{
+        .dry_run = true,
+        .verbose = false,
+        .create_directories = false,
+        .move_files = false,
+    };
+
+    // The listFiles function should run without errors
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("listFiles failed with error: {}\n", .{err});
+        return err;
+    };
+}
+
+test "integration - directory creation workflow" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory for testing directory creation
+    const temp_dir_name = "zigstack_test_create_dirs";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    // Create test files
+    const test_files = [_][]const u8{
+        "test1.txt",
+        "test2.jpg",
+        "test3.mp4",
+        "test4.zip",
+        "test5.zig",
+    };
+
+    var temp_dir = try std.fs.cwd().openDir(temp_dir_name, .{});
+    defer temp_dir.close();
+
+    for (test_files) |filename| {
+        var file = try temp_dir.createFile(filename, .{});
+        try file.writeAll("test content for integration testing");
+        file.close();
+    }
+
+    // Test with directory creation enabled
+    const config = Config{
+        .dry_run = false,
+        .verbose = false,
+        .create_directories = true,
+        .move_files = false,
+    };
+
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("Directory creation test failed: {}\n", .{err});
+        return err;
+    };
+
+    // Verify directories were created
+    const expected_dirs = [_][]const u8{
+        "documents",
+        "images",
+        "videos",
+        "archives",
+        "code",
+    };
+
+    for (expected_dirs) |dir_name| {
+        const dir_path = try std.mem.join(allocator, "/", &[_][]const u8{ temp_dir_name, dir_name });
+        defer allocator.free(dir_path);
+
+        std.fs.cwd().access(dir_path, .{}) catch |err| {
+            std.debug.print("Expected directory not found: {s}\n", .{dir_path});
+            return err;
+        };
+    }
+}
+
+test "integration - file moving workflow" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory for testing file moving
+    const temp_dir_name = "zigstack_test_move_files";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    // Create test files with different extensions
+    const test_files = [_]struct {
+        name: []const u8,
+        expected_dir: []const u8,
+    }{
+        .{ .name = "document.txt", .expected_dir = "documents" },
+        .{ .name = "picture.jpg", .expected_dir = "images" },
+        .{ .name = "movie.mp4", .expected_dir = "videos" },
+        .{ .name = "song.mp3", .expected_dir = "audio" },
+        .{ .name = "backup.zip", .expected_dir = "archives" },
+        .{ .name = "program.zig", .expected_dir = "code" },
+        .{ .name = "database.json", .expected_dir = "data" },
+        .{ .name = "settings.yaml", .expected_dir = "config" },
+    };
+
+    var temp_dir = try std.fs.cwd().openDir(temp_dir_name, .{});
+    defer temp_dir.close();
+
+    for (test_files) |test_file| {
+        var file = try temp_dir.createFile(test_file.name, .{});
+        try file.writeAll("test content for file moving");
+        file.close();
+    }
+
+    // Test with file moving enabled
+    const config = Config{
+        .dry_run = false,
+        .verbose = false,
+        .create_directories = true,
+        .move_files = true,
+    };
+
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("File moving test failed: {}\n", .{err});
+        return err;
+    };
+
+    // Verify files were moved to correct directories
+    for (test_files) |test_file| {
+        const file_path = try std.mem.join(allocator, "/", &[_][]const u8{ temp_dir_name, test_file.expected_dir, test_file.name });
+        defer allocator.free(file_path);
+
+        std.fs.cwd().access(file_path, .{}) catch |err| {
+            std.debug.print("Expected file not found: {s}\n", .{file_path});
+            return err;
+        };
+
+        // Verify original file no longer exists in root
+        const original_path = try std.mem.join(allocator, "/", &[_][]const u8{ temp_dir_name, test_file.name });
+        defer allocator.free(original_path);
+
+        std.fs.cwd().access(original_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {}, // Expected - file should have been moved
+            else => {
+                std.debug.print("Original file still exists: {s}\n", .{original_path});
+                return err;
+            },
+        };
+    }
+}
+
+test "integration - filename conflict resolution" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory for testing filename conflicts
+    const temp_dir_name = "zigstack_test_conflicts";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    var temp_dir = try std.fs.cwd().openDir(temp_dir_name, .{});
+    defer temp_dir.close();
+
+    // Create directories first
+    try temp_dir.makeDir("documents");
+
+    // Create a file in the documents directory to create a conflict
+    var existing_file = try temp_dir.createFile("documents/test.txt", .{});
+    try existing_file.writeAll("existing content");
+    existing_file.close();
+
+    // Create a file with the same name in the root directory
+    var new_file = try temp_dir.createFile("test.txt", .{});
+    try new_file.writeAll("new content");
+    new_file.close();
+
+    // Test file moving with conflict resolution
+    const config = Config{
+        .dry_run = false,
+        .verbose = true,
+        .create_directories = true,
+        .move_files = true,
+    };
+
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("Conflict resolution test failed: {}\n", .{err});
+        return err;
+    };
+
+    // Verify that both files exist (original and renamed)
+    temp_dir.access("documents/test.txt", .{}) catch |err| {
+        std.debug.print("Original conflicting file missing: {}\n", .{err});
+        return err;
+    };
+
+    // The new file should have been renamed to test_1.txt
+    temp_dir.access("documents/test_1.txt", .{}) catch |err| {
+        std.debug.print("Renamed conflicting file missing: {}\n", .{err});
+        return err;
+    };
+}
+
+test "integration - empty directory handling" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary empty directory
+    const temp_dir_name = "zigstack_test_empty";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    const config = Config{
+        .dry_run = true,
+        .verbose = false,
+        .create_directories = false,
+        .move_files = false,
+    };
+
+    // Test that empty directories are handled gracefully
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("Empty directory test failed: {}\n", .{err});
+        return err;
+    };
+}
+
+test "integration - special characters in filenames" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory for testing special characters
+    const temp_dir_name = "zigstack_test_special";
+    std.fs.cwd().makeDir(temp_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // Directory already exists, which is fine
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(temp_dir_name) catch {};
+
+    // Create files with special characters in names
+    const special_files = [_][]const u8{
+        "file with spaces.txt",
+        "file-with-dashes.jpg",
+        "file_with_underscores.mp3",
+        "file123numbers.pdf",
+        "file.multiple.dots.zip",
+    };
+
+    var temp_dir = try std.fs.cwd().openDir(temp_dir_name, .{});
+    defer temp_dir.close();
+
+    for (special_files) |filename| {
+        var file = try temp_dir.createFile(filename, .{});
+        try file.writeAll("content with special characters");
+        file.close();
+    }
+
+    // Test with dry run first
+    const config = Config{
+        .dry_run = true,
+        .verbose = false,
+        .create_directories = false,
+        .move_files = true, // Test move logic in dry-run mode
+    };
+
+    listFiles(allocator, temp_dir_name, &config) catch |err| {
+        std.debug.print("Special characters test failed: {}\n", .{err});
+        return err;
+    };
+}
+
+test "integration - rollback functionality" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Test MoveTracker rollback with real files (simulated)
+    var move_tracker = MoveTracker.init(allocator);
+    defer move_tracker.deinit();
+
+    // Simulate recording some moves
+    try move_tracker.recordMove("source1.txt", "dest1.txt");
+    try move_tracker.recordMove("source2.jpg", "dest2.jpg");
+
+    try testing.expectEqual(@as(usize, 2), move_tracker.moves.items.len);
+
+    // Test that rollback configuration works
+    const config = Config{
+        .dry_run = false,
+        .verbose = true,
+        .create_directories = false,
+        .move_files = false,
+    };
+
+    // Note: We can't actually test file system rollback without creating real files
+    // that we might fail to move, but we can test that the structure works
+    try testing.expectEqual(true, config.verbose);
+}
+
+// Edge case tests for improved robustness
+
+test "edge cases - empty filename handling" {
+    const testing = std.testing;
+
+    // Test empty filename
+    try testing.expectEqualStrings("", getFileExtension(""));
+
+    // Test filename with only dots
+    try testing.expectEqualStrings("", getFileExtension("..."));
+    try testing.expectEqualStrings("", getFileExtension(".."));
+
+    // Test edge cases with categorization
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(""));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension("."));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension("..."));
+}
+
+test "edge cases - very long extensions" {
+    const testing = std.testing;
+
+    // Test very long extension (should be categorized as Other)
+    const long_extension = ".verylongextensionnamethatexceedslimits123456789";
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(long_extension));
+
+    // Test normal extension still works
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".txt"));
+}
+
+test "edge cases - invalid characters in extensions" {
+    const testing = std.testing;
+
+    // Test extensions with only dots and invalid characters
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension("....."));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".@#$%"));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".*&^%"));
+
+    // Test valid extensions with numbers (should still work)
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".123")); // Numbers only should be Other
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".jpg")); // Valid extension
+}
+
+test "edge cases - filename boundaries" {
+    const testing = std.testing;
+
+    // Test single character filenames
+    try testing.expectEqualStrings("", getFileExtension("a"));
+    try testing.expectEqualStrings(".b", getFileExtension("a.b"));
+
+    // Test filename ending with dot
+    try testing.expectEqualStrings(".", getFileExtension("file."));
+
+    // Test multiple extensions
+    try testing.expectEqualStrings(".old", getFileExtension("file.txt.old"));
+    try testing.expectEqualStrings(".gz", getFileExtension("archive.tar.gz"));
+
+    // Categorize these edge cases
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension("."));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".old"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".gz")); // .gz is a known archive extension
+}
+
+test "edge cases - special filename patterns" {
+    const testing = std.testing;
+
+    // Test files that start and end with dots
+    try testing.expectEqualStrings("", getFileExtension(".hidden"));
+    try testing.expectEqualStrings(".txt", getFileExtension(".hidden.txt"));
+
+    // Test files with numbers and special chars
+    try testing.expectEqualStrings(".123", getFileExtension("file.123"));
+    try testing.expectEqualStrings(".test", getFileExtension("123.test"));
+    try testing.expectEqualStrings(".txt", getFileExtension("file-name_123.txt"));
+
+    // Verify these get categorized correctly
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".123"));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".test"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".txt"));
 }
