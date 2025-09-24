@@ -7,6 +7,38 @@ const PROGRAM_NAME = "zigstack";
 const FileInfo = struct {
     name: []const u8,
     extension: []const u8,
+    category: FileCategory,
+};
+
+const FileCategory = enum {
+    Documents,
+    Images,
+    Videos,
+    Audio,
+    Archives,
+    Code,
+    Data,
+    Configuration,
+    Other,
+
+    pub fn toString(self: FileCategory) []const u8 {
+        return switch (self) {
+            .Documents => "Documents",
+            .Images => "Images",
+            .Videos => "Videos",
+            .Audio => "Audio",
+            .Archives => "Archives",
+            .Code => "Code",
+            .Data => "Data",
+            .Configuration => "Configuration",
+            .Other => "Other",
+        };
+    }
+};
+
+const OrganizationPlan = struct {
+    categories: std.hash_map.HashMap(FileCategory, std.ArrayList(FileInfo), std.hash_map.AutoContext(FileCategory), 80),
+    total_files: usize,
 };
 
 const usage_text =
@@ -73,17 +105,145 @@ fn getFileExtension(filename: []const u8) []const u8 {
     return "";
 }
 
+fn categorizeFileByExtension(extension: []const u8) FileCategory {
+    // Convert extension to lowercase for comparison
+    var ext_lower: [256]u8 = undefined;
+    if (extension.len == 0) {
+        return .Other;
+    }
+
+    // Simple lowercase conversion for ASCII
+    const ext_len = @min(extension.len, ext_lower.len);
+    for (extension[0..ext_len], 0..) |c, i| {
+        ext_lower[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    const ext_lower_slice = ext_lower[0..ext_len];
+
+    // Documents
+    if (std.mem.eql(u8, ext_lower_slice, ".txt") or
+        std.mem.eql(u8, ext_lower_slice, ".doc") or
+        std.mem.eql(u8, ext_lower_slice, ".docx") or
+        std.mem.eql(u8, ext_lower_slice, ".pdf") or
+        std.mem.eql(u8, ext_lower_slice, ".odt") or
+        std.mem.eql(u8, ext_lower_slice, ".rtf") or
+        std.mem.eql(u8, ext_lower_slice, ".tex") or
+        std.mem.eql(u8, ext_lower_slice, ".md"))
+    {
+        return .Documents;
+    }
+
+    // Images
+    if (std.mem.eql(u8, ext_lower_slice, ".jpg") or
+        std.mem.eql(u8, ext_lower_slice, ".jpeg") or
+        std.mem.eql(u8, ext_lower_slice, ".png") or
+        std.mem.eql(u8, ext_lower_slice, ".gif") or
+        std.mem.eql(u8, ext_lower_slice, ".bmp") or
+        std.mem.eql(u8, ext_lower_slice, ".svg") or
+        std.mem.eql(u8, ext_lower_slice, ".ico") or
+        std.mem.eql(u8, ext_lower_slice, ".webp"))
+    {
+        return .Images;
+    }
+
+    // Videos
+    if (std.mem.eql(u8, ext_lower_slice, ".mp4") or
+        std.mem.eql(u8, ext_lower_slice, ".avi") or
+        std.mem.eql(u8, ext_lower_slice, ".mkv") or
+        std.mem.eql(u8, ext_lower_slice, ".mov") or
+        std.mem.eql(u8, ext_lower_slice, ".wmv") or
+        std.mem.eql(u8, ext_lower_slice, ".flv") or
+        std.mem.eql(u8, ext_lower_slice, ".webm"))
+    {
+        return .Videos;
+    }
+
+    // Audio
+    if (std.mem.eql(u8, ext_lower_slice, ".mp3") or
+        std.mem.eql(u8, ext_lower_slice, ".wav") or
+        std.mem.eql(u8, ext_lower_slice, ".flac") or
+        std.mem.eql(u8, ext_lower_slice, ".aac") or
+        std.mem.eql(u8, ext_lower_slice, ".ogg") or
+        std.mem.eql(u8, ext_lower_slice, ".wma") or
+        std.mem.eql(u8, ext_lower_slice, ".m4a"))
+    {
+        return .Audio;
+    }
+
+    // Archives
+    if (std.mem.eql(u8, ext_lower_slice, ".zip") or
+        std.mem.eql(u8, ext_lower_slice, ".tar") or
+        std.mem.eql(u8, ext_lower_slice, ".gz") or
+        std.mem.eql(u8, ext_lower_slice, ".rar") or
+        std.mem.eql(u8, ext_lower_slice, ".7z") or
+        std.mem.eql(u8, ext_lower_slice, ".bz2") or
+        std.mem.eql(u8, ext_lower_slice, ".xz"))
+    {
+        return .Archives;
+    }
+
+    // Code
+    if (std.mem.eql(u8, ext_lower_slice, ".c") or
+        std.mem.eql(u8, ext_lower_slice, ".cpp") or
+        std.mem.eql(u8, ext_lower_slice, ".h") or
+        std.mem.eql(u8, ext_lower_slice, ".hpp") or
+        std.mem.eql(u8, ext_lower_slice, ".py") or
+        std.mem.eql(u8, ext_lower_slice, ".js") or
+        std.mem.eql(u8, ext_lower_slice, ".ts") or
+        std.mem.eql(u8, ext_lower_slice, ".java") or
+        std.mem.eql(u8, ext_lower_slice, ".cs") or
+        std.mem.eql(u8, ext_lower_slice, ".go") or
+        std.mem.eql(u8, ext_lower_slice, ".rs") or
+        std.mem.eql(u8, ext_lower_slice, ".zig") or
+        std.mem.eql(u8, ext_lower_slice, ".sh") or
+        std.mem.eql(u8, ext_lower_slice, ".bat"))
+    {
+        return .Code;
+    }
+
+    // Data
+    if (std.mem.eql(u8, ext_lower_slice, ".json") or
+        std.mem.eql(u8, ext_lower_slice, ".xml") or
+        std.mem.eql(u8, ext_lower_slice, ".csv") or
+        std.mem.eql(u8, ext_lower_slice, ".sql") or
+        std.mem.eql(u8, ext_lower_slice, ".db") or
+        std.mem.eql(u8, ext_lower_slice, ".sqlite"))
+    {
+        return .Data;
+    }
+
+    // Configuration
+    if (std.mem.eql(u8, ext_lower_slice, ".ini") or
+        std.mem.eql(u8, ext_lower_slice, ".cfg") or
+        std.mem.eql(u8, ext_lower_slice, ".conf") or
+        std.mem.eql(u8, ext_lower_slice, ".yaml") or
+        std.mem.eql(u8, ext_lower_slice, ".yml") or
+        std.mem.eql(u8, ext_lower_slice, ".toml"))
+    {
+        return .Configuration;
+    }
+
+    return .Other;
+}
+
 fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var files = std.ArrayList(FileInfo).initCapacity(allocator, 0) catch unreachable;
+    // Initialize organization plan
+    var organization_plan = OrganizationPlan{
+        .categories = std.hash_map.HashMap(FileCategory, std.ArrayList(FileInfo), std.hash_map.AutoContext(FileCategory), 80).init(allocator),
+        .total_files = 0,
+    };
     defer {
-        for (files.items) |file| {
-            allocator.free(file.name);
-            allocator.free(file.extension);
+        var it = organization_plan.categories.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.items) |file| {
+                allocator.free(file.name);
+                allocator.free(file.extension);
+            }
+            entry.value_ptr.deinit(allocator);
         }
-        files.deinit(allocator);
+        organization_plan.categories.deinit();
     }
 
     var extension_counts = std.hash_map.StringHashMap(u32).init(allocator);
@@ -95,6 +255,7 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         extension_counts.deinit();
     }
 
+    // Iterate through directory and categorize files
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         // Skip directories, only process files
@@ -102,11 +263,24 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
             const name = try allocator.dupe(u8, entry.name);
             const ext_str = getFileExtension(entry.name);
             const extension = try allocator.dupe(u8, ext_str);
+            const category = categorizeFileByExtension(extension);
 
-            try files.append(allocator, FileInfo{
+            const file_info = FileInfo{
                 .name = name,
                 .extension = extension,
-            });
+                .category = category,
+            };
+
+            // Add file to its category in the organization plan
+            if (organization_plan.categories.getPtr(category)) |list_ptr| {
+                try list_ptr.append(allocator, file_info);
+            } else {
+                var new_list = std.ArrayList(FileInfo).initCapacity(allocator, 1) catch unreachable;
+                try new_list.append(allocator, file_info);
+                try organization_plan.categories.put(category, new_list);
+            }
+
+            organization_plan.total_files += 1;
 
             // Count extensions
             const ext_key = if (extension.len > 0) extension else "(no extension)";
@@ -122,29 +296,75 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     }
 
     // Display results
-    if (files.items.len == 0) {
+    if (organization_plan.total_files == 0) {
         print("No files found in directory.\n", .{});
         return;
     }
 
-    print("\nDiscovered files:\n", .{});
-    print("-----------------\n", .{});
+    print("\n{s}\n", .{"============================================================"});
+    print("FILE ORGANIZATION PREVIEW\n", .{});
+    print("{s}\n\n", .{"============================================================"});
 
-    for (files.items) |file| {
-        print("  {s}\n", .{file.name});
+    print("Total files to organize: {}\n\n", .{organization_plan.total_files});
+
+    // Display files grouped by category
+    print("Files grouped by category:\n", .{});
+    print("{s}\n\n", .{"----------------------------------------"});
+
+    const category_order = [_]FileCategory{
+        .Documents,
+        .Images,
+        .Videos,
+        .Audio,
+        .Archives,
+        .Code,
+        .Data,
+        .Configuration,
+        .Other,
+    };
+
+    for (category_order) |category| {
+        if (organization_plan.categories.get(category)) |file_list| {
+            if (file_list.items.len > 0) {
+                print("📁 {s} ({} files):\n", .{ category.toString(), file_list.items.len });
+                for (file_list.items) |file| {
+                    print("    • {s}", .{file.name});
+                    if (file.extension.len > 0) {
+                        print(" ({s})", .{file.extension});
+                    }
+                    print("\n", .{});
+                }
+                print("\n", .{});
+            }
+        }
     }
 
-    print("\nSummary:\n", .{});
-    print("--------\n", .{});
-    print("Total files: {}\n", .{files.items.len});
+    // Display organization summary
+    print("Organization Summary:\n", .{});
+    print("{s}\n", .{"----------------------------------------"});
 
+    for (category_order) |category| {
+        if (organization_plan.categories.get(category)) |file_list| {
+            if (file_list.items.len > 0) {
+                const percentage = (@as(f32, @floatFromInt(file_list.items.len)) / @as(f32, @floatFromInt(organization_plan.total_files))) * 100.0;
+                print("  {s}: {} files ({d:.1}%)\n", .{ category.toString(), file_list.items.len, percentage });
+            }
+        }
+    }
+
+    // Display file extensions breakdown
     if (extension_counts.count() > 0) {
         print("\nFile extensions breakdown:\n", .{});
+        print("{s}\n", .{"----------------------------------------"});
         var it = extension_counts.iterator();
         while (it.next()) |entry| {
             print("  {s}: {} file(s)\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
     }
+
+    print("\n{s}\n", .{"============================================================"});
+    print("Note: This is a preview. No files have been moved.\n", .{});
+    print("{s}\n", .{"============================================================"});
 }
 
 pub fn main() !void {
@@ -239,4 +459,59 @@ test "getFileExtension" {
     // Test hidden files (starting with .)
     try testing.expectEqualStrings("", getFileExtension(".gitignore"));
     try testing.expectEqualStrings(".txt", getFileExtension(".hidden.txt"));
+}
+
+test "categorizeFileByExtension" {
+    const testing = std.testing;
+
+    // Test Documents
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".txt"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".pdf"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".md"));
+    try testing.expectEqual(FileCategory.Documents, categorizeFileByExtension(".doc"));
+
+    // Test Images
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".jpg"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".jpeg"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".png"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".gif"));
+
+    // Test Videos
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".mp4"));
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".avi"));
+    try testing.expectEqual(FileCategory.Videos, categorizeFileByExtension(".mkv"));
+
+    // Test Audio
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".mp3"));
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".wav"));
+    try testing.expectEqual(FileCategory.Audio, categorizeFileByExtension(".flac"));
+
+    // Test Archives
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".zip"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".tar"));
+    try testing.expectEqual(FileCategory.Archives, categorizeFileByExtension(".gz"));
+
+    // Test Code
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".zig"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".py"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".js"));
+
+    // Test Data
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".json"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".xml"));
+    try testing.expectEqual(FileCategory.Data, categorizeFileByExtension(".csv"));
+
+    // Test Configuration
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".ini"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".yaml"));
+    try testing.expectEqual(FileCategory.Configuration, categorizeFileByExtension(".toml"));
+
+    // Test case insensitive
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".JPG"));
+    try testing.expectEqual(FileCategory.Images, categorizeFileByExtension(".PNG"));
+    try testing.expectEqual(FileCategory.Code, categorizeFileByExtension(".ZIG"));
+
+    // Test Other/Unknown
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(".xyz"));
+    try testing.expectEqual(FileCategory.Other, categorizeFileByExtension(""));
 }
