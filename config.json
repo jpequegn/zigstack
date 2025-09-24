@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "categories": {
+    "Code": {
+      "description": "Programming and markup files",
+      "extensions": [".zig", ".c", ".cpp", ".h", ".hpp", ".rs", ".go", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".kt", ".swift", ".php", ".rb", ".scala", ".sh", ".bat", ".ps1", ".html", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf"],
+      "color": "#4A90E2",
+      "priority": 1
+    },
+    "Documents": {
+      "description": "Text documents and presentations",
+      "extensions": [".md", ".txt", ".rtf", ".doc", ".docx", ".pdf", ".odt", ".tex", ".ppt", ".pptx", ".odp", ".pages", ".keynote"],
+      "color": "#7ED321",
+      "priority": 2
+    },
+    "Images": {
+      "description": "Image and graphics files",
+      "extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff", ".tif", ".psd", ".ai", ".eps", ".raw", ".cr2", ".nef", ".arw"],
+      "color": "#F5A623",
+      "priority": 3
+    },
+    "Media": {
+      "description": "Audio and video files",
+      "extensions": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma", ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".3gp"],
+      "color": "#D0021B",
+      "priority": 4
+    },
+    "Archives": {
+      "description": "Compressed and archive files",
+      "extensions": [".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".dmg", ".iso", ".deb", ".rpm", ".pkg", ".msi"],
+      "color": "#9013FE",
+      "priority": 5
+    },
+    "Data": {
+      "description": "Database and data files",
+      "extensions": [".db", ".sqlite", ".sql", ".csv", ".tsv", ".xlsx", ".xls", ".ods", ".parquet", ".avro", ".feather", ".hdf5", ".h5"],
+      "color": "#50E3C2",
+      "priority": 6
+    },
+    "System": {
+      "description": "System and configuration files",
+      "extensions": [".log", ".tmp", ".cache", ".lock", ".pid", ".sock", ".service", ".desktop", ".app", ".exe", ".dll", ".so", ".dylib"],
+      "color": "#B8E986",
+      "priority": 7
+    }
+  },
+  "display": {
+    "show_categories": true,
+    "show_colors": false,
+    "group_by_category": true,
+    "sort_categories_by_priority": true,
+    "show_category_summaries": true,
+    "show_uncategorized": true,
+    "uncategorized_label": "Other"
+  },
+  "behavior": {
+    "case_sensitive_extensions": false,
+    "include_hidden_files": false,
+    "include_directories": false,
+    "max_depth": 1
+  }
+}

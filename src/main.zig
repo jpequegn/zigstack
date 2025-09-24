@@ -55,13 +55,6 @@ const OrganizationPlan = struct {
     total_files: usize,
 };
 
-const Config = struct {
-    create_directories: bool = false,
-    move_files: bool = false,
-    dry_run: bool = true,
-    verbose: bool = false,
-};
-
 const MoveRecord = struct {
     original_path: []const u8,
     destination_path: []const u8,
@@ -124,6 +117,53 @@ const MoveTracker = struct {
     }
 };
 
+const Category = struct {
+    description: []const u8,
+    extensions: []const []const u8,
+    color: []const u8,
+    priority: u32,
+};
+
+const DisplayConfig = struct {
+    show_categories: bool = true,
+    show_colors: bool = false,
+    group_by_category: bool = true,
+    sort_categories_by_priority: bool = true,
+    show_category_summaries: bool = true,
+    show_uncategorized: bool = true,
+    uncategorized_label: []const u8 = "Other",
+};
+
+const BehaviorConfig = struct {
+    case_sensitive_extensions: bool = false,
+    include_hidden_files: bool = false,
+    include_directories: bool = false,
+    max_depth: u32 = 1,
+};
+
+const ConfigData = struct {
+    version: []const u8,
+    categories: std.StringHashMap(Category),
+    display: DisplayConfig,
+    behavior: BehaviorConfig,
+
+    pub fn deinit(self: *ConfigData) void {
+        self.categories.deinit();
+    }
+};
+
+const Config = struct {
+    // File management flags
+    create_directories: bool = false,
+    move_files: bool = false,
+    dry_run: bool = true,
+    verbose: bool = false,
+
+    // Configuration file support
+    config_file_path: ?[]const u8 = null,
+    data: ?ConfigData = null,
+};
+
 const usage_text =
     \\Usage: {s} [OPTIONS] <directory>
     \\
@@ -134,22 +174,24 @@ const usage_text =
     \\
     \\Options:
     \\  -h, --help        Display this help message
-    \\  --version         Display version information
+    \\  -v, --version     Display version information
+    \\  --config PATH     Configuration file path (JSON format)
     \\  -c, --create      Create directories (default: preview only)
     \\  -m, --move        Move files to directories (implies --create)
     \\  -d, --dry-run     Show what would happen without doing it
     \\  -V, --verbose     Enable verbose logging
     \\
     \\Examples:
-    \\  {s} /path/to/project              # Preview organization
-    \\  {s} --create /path/to/project     # Create directories only
-    \\  {s} --move /path/to/project       # Create directories and move files
-    \\  {s} --dry-run --verbose /path     # Verbose preview mode
+    \\  {s} /path/to/project                          # Preview organization
+    \\  {s} --create /path/to/project                 # Create directories only
+    \\  {s} --move /path/to/project                   # Create directories and move files
+    \\  {s} --config custom.json /path/to/project     # Use custom categorization config
+    \\  {s} --dry-run --verbose /path                 # Verbose preview mode
     \\
 ;
 
 fn printUsage(program_name: []const u8) void {
-    print(usage_text, .{ program_name, program_name, program_name, program_name, program_name });
+    print(usage_text, .{ program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -182,6 +224,127 @@ fn validateDirectory(path: []const u8) !void {
     file.close();
 }
 
+fn loadConfig(allocator: std.mem.Allocator, config_path: []const u8) !ConfigData {
+    // Read the config file
+    const config_file = std.fs.cwd().openFile(config_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            printError("Configuration file not found");
+            return err;
+        },
+        error.AccessDenied => {
+            printError("Access denied to configuration file");
+            return err;
+        },
+        else => {
+            printError("Unable to open configuration file");
+            return err;
+        },
+    };
+    defer config_file.close();
+
+    const file_size = try config_file.getEndPos();
+    const contents = try allocator.alloc(u8, file_size);
+    defer allocator.free(contents);
+
+    _ = try config_file.readAll(contents);
+
+    // Parse JSON
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, contents, .{}) catch |err| switch (err) {
+        error.InvalidCharacter, error.UnexpectedToken, error.InvalidNumber => {
+            printError("Invalid JSON in configuration file");
+            return error.InvalidJson;
+        },
+        else => {
+            printError("Failed to parse configuration file");
+            return err;
+        },
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+
+    if (root != .object) {
+        printError("Configuration file must contain a JSON object");
+        return error.InvalidJson;
+    }
+
+    // Initialize the config data
+    var config_data = ConfigData{
+        .version = "",
+        .categories = std.StringHashMap(Category).init(allocator),
+        .display = DisplayConfig{},
+        .behavior = BehaviorConfig{},
+    };
+
+    // Parse version (optional)
+    if (root.object.get("version")) |version_val| {
+        if (version_val == .string) {
+            config_data.version = try allocator.dupe(u8, version_val.string);
+        }
+    }
+
+    // Parse categories (required)
+    if (root.object.get("categories")) |categories_val| {
+        if (categories_val != .object) {
+            printError("'categories' must be an object");
+            return error.InvalidJson;
+        }
+
+        var categories_iter = categories_val.object.iterator();
+        while (categories_iter.next()) |category_entry| {
+            const category_name = category_entry.key_ptr.*;
+            const category_val = category_entry.value_ptr.*;
+
+            if (category_val != .object) continue;
+
+            // Parse category details
+            var category = Category{
+                .description = "",
+                .extensions = &[_][]const u8{},
+                .color = "#FFFFFF",
+                .priority = 999,
+            };
+
+            if (category_val.object.get("description")) |desc_val| {
+                if (desc_val == .string) {
+                    category.description = try allocator.dupe(u8, desc_val.string);
+                }
+            }
+
+            if (category_val.object.get("color")) |color_val| {
+                if (color_val == .string) {
+                    category.color = try allocator.dupe(u8, color_val.string);
+                }
+            }
+
+            if (category_val.object.get("priority")) |priority_val| {
+                if (priority_val == .integer) {
+                    category.priority = @intCast(priority_val.integer);
+                }
+            }
+
+            if (category_val.object.get("extensions")) |ext_val| {
+                if (ext_val == .array) {
+                    var extensions = try allocator.alloc([]const u8, ext_val.array.items.len);
+                    for (ext_val.array.items, 0..) |item, i| {
+                        if (item == .string) {
+                            extensions[i] = try allocator.dupe(u8, item.string);
+                        } else {
+                            extensions[i] = "";
+                        }
+                    }
+                    category.extensions = extensions;
+                }
+            }
+
+            const category_name_owned = try allocator.dupe(u8, category_name);
+            try config_data.categories.put(category_name_owned, category);
+        }
+    }
+
+    return config_data;
+}
+
 fn getFileExtension(filename: []const u8) []const u8 {
     if (std.mem.lastIndexOf(u8, filename, ".")) |dot_index| {
         // Don't count hidden files starting with '.' as having an extension
@@ -191,6 +354,26 @@ fn getFileExtension(filename: []const u8) []const u8 {
         return filename[dot_index..];
     }
     return "";
+}
+
+fn categorizeExtension(extension: []const u8, config_data: ?ConfigData) []const u8 {
+    if (config_data) |data| {
+        var categories_iter = data.categories.iterator();
+        while (categories_iter.next()) |entry| {
+            const category_name = entry.key_ptr.*;
+            const category = entry.value_ptr.*;
+
+            for (category.extensions) |ext| {
+                if (std.mem.eql(u8, extension, ext)) {
+                    return category_name;
+                }
+            }
+        }
+    }
+
+    // Fallback to enum-based categorization
+    const file_category = categorizeFileByExtension(extension);
+    return file_category.toString();
 }
 
 fn resolveFilenameConflict(allocator: std.mem.Allocator, target_path: []const u8) ![]const u8 {
@@ -509,12 +692,19 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
     }
 
     var extension_counts = std.hash_map.StringHashMap(u32).init(allocator);
+    var category_counts = std.hash_map.StringHashMap(u32).init(allocator);
     defer {
         var it = extension_counts.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
         extension_counts.deinit();
+
+        var cat_it = category_counts.iterator();
+        while (cat_it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+        }
+        category_counts.deinit();
     }
 
     // Iterate through directory and categorize files
@@ -553,6 +743,17 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
                 allocator.free(ext_key_copy);
             } else {
                 try extension_counts.put(ext_key_copy, 1);
+            }
+
+            // Count categories
+            const category_name = categorizeExtension(extension, config.data);
+            const category_copy = try allocator.dupe(u8, category_name);
+
+            if (category_counts.get(category_copy)) |count| {
+                try category_counts.put(category_copy, count + 1);
+                allocator.free(category_copy);
+            } else {
+                try category_counts.put(category_copy, 1);
             }
         }
     }
@@ -617,12 +818,21 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
     print("Organization Summary:\n", .{});
     print("{s}\n", .{"----------------------------------------"});
 
+    // Display category summary with both config and enum-based
     for (category_order) |category| {
         if (organization_plan.categories.get(category)) |file_list| {
             if (file_list.items.len > 0) {
                 const percentage = (@as(f32, @floatFromInt(file_list.items.len)) / @as(f32, @floatFromInt(organization_plan.total_files))) * 100.0;
                 print("  {s}: {} files ({d:.1}%)\n", .{ category.toString(), file_list.items.len, percentage });
             }
+        }
+    }
+
+    if (category_counts.count() > 0) {
+        print("\nCustom category breakdown:\n", .{});
+        var cat_it = category_counts.iterator();
+        while (cat_it.next()) |entry| {
+            print("  {s}: {} file(s)\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
     }
 
@@ -693,8 +903,8 @@ pub fn main() !void {
     }
 
     // Parse arguments
-    var directory_path: ?[]const u8 = null;
     var config = Config{};
+    var directory_path: ?[]const u8 = null;
     var i: usize = 1;
 
     while (i < args.len) {
@@ -706,6 +916,13 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--version")) {
             printVersion();
             return;
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing config file path after --config");
+                std.process.exit(1);
+            }
+            config.config_file_path = args[i];
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--create")) {
             config.create_directories = true;
             config.dry_run = false; // Creating implies not dry-run
@@ -748,8 +965,19 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
+    // Load configuration if provided
+    if (config.config_file_path) |config_path| {
+        config.data = loadConfig(allocator, config_path) catch {
+            printError("Failed to load configuration file");
+            std.process.exit(1);
+        };
+    }
+
     // If we get here, directory is valid
     print("Analyzing directory: {s}\n", .{path});
+    if (config.config_file_path) |config_path| {
+        print("Using configuration: {s}\n", .{config_path});
+    }
 
     // List files in the directory
     listFiles(allocator, path, &config) catch |err| {
