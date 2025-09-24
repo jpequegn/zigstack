@@ -57,8 +57,71 @@ const OrganizationPlan = struct {
 
 const Config = struct {
     create_directories: bool = false,
+    move_files: bool = false,
     dry_run: bool = true,
     verbose: bool = false,
+};
+
+const MoveRecord = struct {
+    original_path: []const u8,
+    destination_path: []const u8,
+};
+
+const MoveTracker = struct {
+    moves: std.ArrayList(MoveRecord),
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) MoveTracker {
+        return MoveTracker{
+            .moves = std.ArrayList(MoveRecord){},
+            .allocator = allocator,
+        };
+    }
+
+    fn deinit(self: *MoveTracker) void {
+        for (self.moves.items) |move_record| {
+            self.allocator.free(move_record.original_path);
+            self.allocator.free(move_record.destination_path);
+        }
+        self.moves.deinit(self.allocator);
+    }
+
+    fn recordMove(self: *MoveTracker, original_path: []const u8, destination_path: []const u8) !void {
+        const original_copy = try self.allocator.dupe(u8, original_path);
+        const destination_copy = try self.allocator.dupe(u8, destination_path);
+
+        try self.moves.append(self.allocator, MoveRecord{
+            .original_path = original_copy,
+            .destination_path = destination_copy,
+        });
+    }
+
+    fn rollback(self: *MoveTracker, config: *const Config) !void {
+        if (config.verbose) {
+            print("Rolling back {} file moves...\n", .{self.moves.items.len});
+        }
+
+        // Rollback in reverse order
+        var i = self.moves.items.len;
+        while (i > 0) {
+            i -= 1;
+            const move_record = self.moves.items[i];
+
+            if (config.verbose) {
+                print("Moving {s} back to {s}\n", .{ move_record.destination_path, move_record.original_path });
+            }
+
+            std.fs.cwd().rename(move_record.destination_path, move_record.original_path) catch |err| {
+                printError("Failed to rollback file move");
+                print("Could not move {s} back to {s}: {}\n", .{ move_record.destination_path, move_record.original_path, err });
+                return err;
+            };
+        }
+
+        if (config.verbose) {
+            print("Rollback complete.\n", .{});
+        }
+    }
 };
 
 const usage_text =
@@ -73,18 +136,20 @@ const usage_text =
     \\  -h, --help        Display this help message
     \\  --version         Display version information
     \\  -c, --create      Create directories (default: preview only)
+    \\  -m, --move        Move files to directories (implies --create)
     \\  -d, --dry-run     Show what would happen without doing it
     \\  -V, --verbose     Enable verbose logging
     \\
     \\Examples:
     \\  {s} /path/to/project              # Preview organization
-    \\  {s} --create /path/to/project     # Actually create directories
+    \\  {s} --create /path/to/project     # Create directories only
+    \\  {s} --move /path/to/project       # Create directories and move files
     \\  {s} --dry-run --verbose /path     # Verbose preview mode
     \\
 ;
 
 fn printUsage(program_name: []const u8) void {
-    print(usage_text, .{ program_name, program_name, program_name, program_name });
+    print(usage_text, .{ program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -126,6 +191,57 @@ fn getFileExtension(filename: []const u8) []const u8 {
         return filename[dot_index..];
     }
     return "";
+}
+
+fn resolveFilenameConflict(allocator: std.mem.Allocator, target_path: []const u8) ![]const u8 {
+    // Check if the target path exists
+    std.fs.cwd().access(target_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            // File doesn't exist, use original path
+            return try allocator.dupe(u8, target_path);
+        },
+        else => return err,
+    };
+
+    // File exists, need to find alternative name
+    const dir_name = std.fs.path.dirname(target_path) orelse ".";
+    const base_name = std.fs.path.basename(target_path);
+
+    // Split filename and extension
+    const extension = getFileExtension(base_name);
+    const name_without_ext = if (extension.len > 0)
+        base_name[0..base_name.len - extension.len]
+    else
+        base_name;
+
+    // Try incrementing counter until we find available name
+    var counter: u32 = 1;
+    while (counter < 1000) : (counter += 1) {
+        const new_name = if (extension.len > 0)
+            try std.fmt.allocPrint(allocator, "{s}_{}{s}", .{ name_without_ext, counter, extension })
+        else
+            try std.fmt.allocPrint(allocator, "{s}_{}", .{ name_without_ext, counter });
+
+        const new_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_name, new_name });
+
+        std.fs.cwd().access(new_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                // Found available name
+                allocator.free(new_name);
+                return new_path;
+            },
+            else => {
+                allocator.free(new_name);
+                allocator.free(new_path);
+                return err;
+            },
+        };
+
+        allocator.free(new_name);
+        allocator.free(new_path);
+    }
+
+    return error.TooManyConflicts;
 }
 
 fn categorizeFileByExtension(extension: []const u8) FileCategory {
@@ -295,9 +411,85 @@ fn createDirectories(allocator: std.mem.Allocator, base_path: []const u8, organi
     }
 }
 
+fn moveFiles(allocator: std.mem.Allocator, base_path: []const u8, organization_plan: *const OrganizationPlan, config: *const Config, move_tracker: *MoveTracker) !void {
+    if (config.verbose) {
+        print("Moving files in: {s}\n", .{base_path});
+    }
+
+    var iterator = organization_plan.categories.iterator();
+    while (iterator.next()) |entry| {
+        const category = entry.key_ptr.*;
+        const file_list = entry.value_ptr.*;
+
+        if (file_list.items.len == 0) continue;
+
+        const dir_name = category.toDirectoryName();
+
+        // Create full directory path
+        const dest_dir_path = try std.mem.join(allocator, "/", &[_][]const u8{ base_path, dir_name });
+        defer allocator.free(dest_dir_path);
+
+        // Move each file in this category
+        for (file_list.items) |file_info| {
+            const source_path = try std.mem.join(allocator, "/", &[_][]const u8{ base_path, file_info.name });
+            defer allocator.free(source_path);
+
+            const initial_dest_path = try std.mem.join(allocator, "/", &[_][]const u8{ dest_dir_path, file_info.name });
+            defer allocator.free(initial_dest_path);
+
+            if (config.dry_run) {
+                // Check for conflicts in dry-run mode
+                const final_dest_path = resolveFilenameConflict(allocator, initial_dest_path) catch |err| {
+                    printError("Failed to resolve filename conflict in dry-run");
+                    return err;
+                };
+                defer allocator.free(final_dest_path);
+
+                if (std.mem.eql(u8, initial_dest_path, final_dest_path)) {
+                    print("Would move: {s} → {s}\n", .{ source_path, final_dest_path });
+                } else {
+                    print("Would move: {s} → {s} (renamed due to conflict)\n", .{ source_path, final_dest_path });
+                }
+            } else if (config.move_files) {
+                // Actually move the file
+                const final_dest_path = resolveFilenameConflict(allocator, initial_dest_path) catch |err| {
+                    printError("Failed to resolve filename conflict");
+                    print("Error with file: {s}\n", .{file_info.name});
+                    return err;
+                };
+
+                // Perform the move
+                std.fs.cwd().rename(source_path, final_dest_path) catch |err| {
+                    printError("Failed to move file");
+                    print("Could not move {s} to {s}: {}\n", .{ source_path, final_dest_path, err });
+                    allocator.free(final_dest_path);
+                    return err;
+                };
+
+                // Record the move for potential rollback
+                try move_tracker.recordMove(source_path, final_dest_path);
+
+                if (config.verbose) {
+                    if (std.mem.eql(u8, initial_dest_path, final_dest_path)) {
+                        print("Moved: {s} → {s}\n", .{ source_path, final_dest_path });
+                    } else {
+                        print("Moved: {s} → {s} (renamed due to conflict)\n", .{ source_path, final_dest_path });
+                    }
+                }
+
+                allocator.free(final_dest_path);
+            }
+        }
+    }
+}
+
 fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const Config) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
+
+    // Initialize move tracker for rollback capability
+    var move_tracker = MoveTracker.init(allocator);
+    defer move_tracker.deinit();
 
     // Initialize organization plan
     var organization_plan = OrganizationPlan{
@@ -373,7 +565,13 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
 
     print("\n{s}\n", .{"============================================================"});
     if (config.dry_run) {
-        print("FILE ORGANIZATION PREVIEW (DRY RUN)\n", .{});
+        if (config.move_files) {
+            print("FILE ORGANIZATION PREVIEW - MOVING FILES (DRY RUN)\n", .{});
+        } else {
+            print("FILE ORGANIZATION PREVIEW (DRY RUN)\n", .{});
+        }
+    } else if (config.move_files) {
+        print("FILE ORGANIZATION - MOVING FILES\n", .{});
     } else if (config.create_directories) {
         print("FILE ORGANIZATION - CREATING DIRECTORIES\n", .{});
     } else {
@@ -444,9 +642,32 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
         return err;
     };
 
+    // Move files if requested
+    if (config.move_files or config.dry_run) {
+        moveFiles(allocator, dir_path, &organization_plan, config, &move_tracker) catch |err| {
+            if (config.move_files and !config.dry_run) {
+                printError("File moving failed. Attempting rollback...");
+                move_tracker.rollback(config) catch |rollback_err| {
+                    printError("Rollback also failed!");
+                    print("Original error: {}\n", .{err});
+                    print("Rollback error: {}\n", .{rollback_err});
+                    return rollback_err;
+                };
+                print("Rollback successful. Files restored to original locations.\n", .{});
+            }
+            return err;
+        };
+    }
+
     print("\n{s}\n", .{"============================================================"});
     if (config.dry_run) {
-        print("Note: This is a preview. No directories have been created.\n", .{});
+        if (config.move_files) {
+            print("Note: This is a preview. No directories or files have been moved.\n", .{});
+        } else {
+            print("Note: This is a preview. No directories have been created.\n", .{});
+        }
+    } else if (config.move_files) {
+        print("Directory creation and file moving complete.\n", .{});
     } else if (config.create_directories) {
         print("Directory creation complete.\n", .{});
     } else {
@@ -488,9 +709,14 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--create")) {
             config.create_directories = true;
             config.dry_run = false; // Creating implies not dry-run
+        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--move")) {
+            config.move_files = true;
+            config.create_directories = true; // Moving implies creating directories
+            config.dry_run = false; // Moving implies not dry-run
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--dry-run")) {
             config.dry_run = true;
             config.create_directories = false; // Dry-run implies not creating
+            config.move_files = false; // Dry-run implies not moving
         } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
             config.verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -633,6 +859,43 @@ test "Config defaults" {
 
     const config = Config{};
     try testing.expectEqual(false, config.create_directories);
+    try testing.expectEqual(false, config.move_files);
     try testing.expectEqual(true, config.dry_run);
     try testing.expectEqual(false, config.verbose);
+}
+
+test "resolveFilenameConflict with no conflict" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    // Test with non-existent file (should return original path)
+    const result = try resolveFilenameConflict(allocator, "/tmp/nonexistent_file.txt");
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("/tmp/nonexistent_file.txt", result);
+}
+
+test "MoveTracker initialization and cleanup" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    var move_tracker = MoveTracker.init(allocator);
+    defer move_tracker.deinit();
+
+    // Verify it initializes correctly
+    try testing.expectEqual(@as(usize, 0), move_tracker.moves.items.len);
+}
+
+test "MoveTracker record move" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+
+    var move_tracker = MoveTracker.init(allocator);
+    defer move_tracker.deinit();
+
+    try move_tracker.recordMove("/source/file.txt", "/dest/file.txt");
+
+    try testing.expectEqual(@as(usize, 1), move_tracker.moves.items.len);
+    try testing.expectEqualStrings("/source/file.txt", move_tracker.moves.items[0].original_path);
+    try testing.expectEqualStrings("/dest/file.txt", move_tracker.moves.items[0].destination_path);
 }
