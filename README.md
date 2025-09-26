@@ -5,6 +5,11 @@ A powerful command-line file organization tool written in Zig that automatically
 ## Features
 
 - **Smart File Categorization**: Automatically categorizes files into Documents, Images, Videos, Audio, Archives, Code, Data, Configuration, and Other
+- **Advanced Organization Options**:
+  - **Date-based organization**: Organize files by creation or modification time (year, year-month, year-month-day)
+  - **Size-based organization**: Separate large files from regular files with customizable size threshold
+  - **Duplicate file detection**: Find and handle duplicate files with multiple strategies (skip, rename, replace, keep-both)
+  - **Recursive directory processing**: Process subdirectories with configurable depth control
 - **Custom Configuration**: Support for JSON configuration files to define custom categories and file extensions
 - **Safe Operations**: Dry-run mode to preview changes before execution
 - **Conflict Resolution**: Automatic file renaming when conflicts occur
@@ -49,6 +54,7 @@ zigstack [OPTIONS] <directory>
 
 ### Command-Line Options
 
+#### Basic Options
 - `-h, --help` - Display help message
 - `-v, --version` - Display version information
 - `--config PATH` - Specify custom configuration file (JSON format)
@@ -56,6 +62,16 @@ zigstack [OPTIONS] <directory>
 - `-m, --move` - Move files to directories (implies --create)
 - `-d, --dry-run` - Show what would happen without doing it (default mode)
 - `-V, --verbose` - Enable verbose logging
+
+#### Advanced Organization Options
+- `--by-date` - Organize files by date (creation or modification time)
+- `--date-format FORMAT` - Date organization format: year, year-month, year-month-day (default: year-month)
+- `--by-size` - Separate large files from regular files
+- `--size-threshold MB` - Size threshold for large files in MB (default: 100)
+- `--detect-dups` - Enable duplicate file detection
+- `--dup-action ACTION` - How to handle duplicates: skip, rename, replace, keep-both (default: skip)
+- `--recursive` - Process subdirectories recursively
+- `--max-depth DEPTH` - Maximum recursion depth (default: 10)
 
 ### Examples
 
@@ -92,8 +108,72 @@ zigstack --config my-config.json --move /path/to/directory
 zigstack --verbose --move /path/to/directory
 ```
 
+#### Advanced Organization Examples
+
+##### Date-based Organization
+```bash
+# Organize files by creation/modification year and month
+zigstack --by-date --move /path/to/directory
+
+# Organize files by year only
+zigstack --by-date --date-format year --move /path/to/directory
+
+# Organize files by full date (year/month/day)
+zigstack --by-date --date-format year-month-day --move /path/to/directory
+```
+
+##### Size-based Organization
+```bash
+# Separate large files (>100MB) from regular files
+zigstack --by-size --move /path/to/directory
+
+# Use custom size threshold (>50MB)
+zigstack --by-size --size-threshold 50 --move /path/to/directory
+```
+
+##### Duplicate File Detection
+```bash
+# Find and skip duplicate files (default behavior)
+zigstack --detect-dups --move /path/to/directory
+
+# Rename duplicate files (file.txt → file_1.txt, file_2.txt, etc.)
+zigstack --detect-dups --dup-action rename --move /path/to/directory
+
+# Replace duplicate files (keep the last one processed)
+zigstack --detect-dups --dup-action replace --move /path/to/directory
+
+# Keep both files with different names
+zigstack --detect-dups --dup-action keep-both --move /path/to/directory
+```
+
+##### Recursive Directory Processing
+```bash
+# Process all subdirectories (up to 10 levels deep by default)
+zigstack --recursive --move /path/to/directory
+
+# Limit recursion depth to 3 levels
+zigstack --recursive --max-depth 3 --move /path/to/directory
+```
+
+##### Combined Advanced Features
+```bash
+# Organize by date with duplicate detection and recursive processing
+zigstack --by-date --detect-dups --recursive --move /path/to/directory
+
+# Size-based organization with custom threshold, recursive processing, and verbose output
+zigstack --by-size --size-threshold 200 --recursive --max-depth 5 --verbose --move /path/to/directory
+
+# Full feature demonstration: date organization, duplicate handling, size separation, recursive
+zigstack --by-date --date-format year-month-day \
+         --detect-dups --dup-action rename \
+         --by-size --size-threshold 100 \
+         --recursive --max-depth 3 \
+         --verbose --move /path/to/directory
+```
+
 ### Example Output
 
+#### Standard Organization
 ```
 ============================================================
 FILE ORGANIZATION - MOVING FILES
@@ -130,6 +210,93 @@ Organization Summary:
 
 ============================================================
 Directory creation and file moving complete.
+============================================================
+```
+
+#### Date-based Organization Output
+```
+============================================================
+FILE ORGANIZATION - DATE-BASED ORGANIZATION
+============================================================
+
+Total files to organize: 15
+
+Files organized by date:
+----------------------------------------
+
+📁 2024/09 (8 files):
+    📁 Documents (3 files):
+        • report.pdf (.pdf)
+        • notes.txt (.txt)
+        • presentation.docx (.docx)
+    📁 Images (5 files):
+        • photo1.jpg (.jpg)
+        • logo.png (.png)
+        • diagram.svg (.svg)
+        • screenshot.webp (.webp)
+        • banner.gif (.gif)
+
+📁 2024/08 (4 files):
+    📁 Code (2 files):
+        • main.zig (.zig)
+        • script.py (.py)
+    📁 Data (2 files):
+        • database.json (.json)
+        • config.yaml (.yaml)
+
+📁 2024/07 (3 files):
+    📁 Audio (2 files):
+        • song.mp3 (.mp3)
+        • podcast.wav (.wav)
+    📁 Videos (1 files):
+        • demo.mp4 (.mp4)
+
+Organization Summary:
+----------------------------------------
+  2024/09: 8 files (53.3%)
+  2024/08: 4 files (26.7%)
+  2024/07: 3 files (20.0%)
+
+============================================================
+Date-based organization complete.
+============================================================
+```
+
+#### Size-based Organization Output
+```
+============================================================
+FILE ORGANIZATION - SIZE-BASED ORGANIZATION
+============================================================
+
+Total files to organize: 10
+
+Files organized by size:
+----------------------------------------
+
+📁 Large Files (>100MB) (3 files):
+    • large_video.mp4 (450.2 MB)
+    • backup_archive.zip (235.8 MB)
+    • high_res_image.tiff (125.4 MB)
+
+📁 Regular Files (7 files):
+    📁 Documents (2 files):
+        • report.pdf (2.1 MB)
+        • notes.txt (15.2 KB)
+    📁 Images (3 files):
+        • photo.jpg (850.5 KB)
+        • logo.png (45.3 KB)
+        • icon.svg (8.2 KB)
+    📁 Code (2 files):
+        • main.zig (12.4 KB)
+        • script.py (3.7 KB)
+
+Organization Summary:
+----------------------------------------
+  Large Files: 3 files (30.0%) - 811.4 MB total
+  Regular Files: 7 files (70.0%) - 45.8 MB total
+
+============================================================
+Size-based organization complete.
 ============================================================
 ```
 
@@ -190,7 +357,8 @@ Create a JSON configuration file to customize categories and file extensions:
 
 ## Directory Structure
 
-After organization, your directory will look like:
+### Standard Organization
+After basic organization, your directory will look like:
 
 ```
 /your/directory/
@@ -205,6 +373,75 @@ After organization, your directory will look like:
 │   └── script.py
 └── misc/
     └── unknown_file
+```
+
+### Date-based Organization
+With `--by-date --date-format year-month`:
+
+```
+/your/directory/
+├── 2024/
+│   ├── 09/
+│   │   ├── documents/
+│   │   │   ├── recent_report.pdf
+│   │   │   └── meeting_notes.txt
+│   │   └── images/
+│   │       └── recent_photo.jpg
+│   ├── 08/
+│   │   ├── code/
+│   │   │   └── old_script.py
+│   │   └── data/
+│   │       └── backup.json
+│   └── 07/
+│       └── audio/
+│           └── old_recording.mp3
+└── 2023/
+    └── 12/
+        └── documents/
+            └── archive_document.pdf
+```
+
+### Size-based Organization
+With `--by-size`:
+
+```
+/your/directory/
+├── large_files/           # Files > size threshold
+│   ├── huge_video.mp4     # 500MB
+│   ├── large_archive.zip  # 250MB
+│   └── big_dataset.csv    # 150MB
+└── regular_files/         # Files <= size threshold
+    ├── documents/
+    │   ├── report.pdf     # 2MB
+    │   └── notes.txt      # 15KB
+    ├── images/
+    │   └── photo.jpg      # 800KB
+    └── code/
+        └── script.py      # 5KB
+```
+
+### Combined Organization
+With `--by-date --by-size`:
+
+```
+/your/directory/
+├── 2024/
+│   ├── 09/
+│   │   ├── large_files/
+│   │   │   └── presentation_video.mp4  # 300MB
+│   │   └── regular_files/
+│   │       ├── documents/
+│   │       │   └── report.pdf          # 2MB
+│   │       └── images/
+│   │           └── chart.png           # 500KB
+│   └── 08/
+│       └── regular_files/
+│           └── code/
+│               └── script.py           # 5KB
+└── 2023/
+    └── 12/
+        └── large_files/
+            └── archive.zip             # 1GB
 ```
 
 ## Safety Features
@@ -252,6 +489,7 @@ zig build -Doptimize=Debug
 
 zigstack robustly handles various edge cases:
 
+### Basic Edge Cases
 - **Empty files**: Organized based on extension, regardless of file size
 - **Files without extensions**: Categorized as "Other"
 - **Special characters**: Filenames with spaces, dashes, underscores, and numbers
@@ -261,18 +499,48 @@ zigstack robustly handles various edge cases:
 - **Permission issues**: Clear error messages and graceful handling
 - **Disk space**: Checking for available space before operations
 
+### Advanced Feature Edge Cases
+- **Date-based organization**:
+  - Files with invalid or missing timestamps (fallback to current time)
+  - Future dates (properly handled without issues)
+  - Files from different time zones
+  - Leap years and month boundaries
+- **Size-based organization**:
+  - Zero-byte files (treated as regular files)
+  - Extremely large files (>1TB, proper memory management)
+  - Sparse files and symbolic links
+- **Duplicate detection**:
+  - Files with identical content but different names
+  - Files with same name but different content
+  - Binary files, text files, and special file types
+  - Large files (streaming hash calculation to avoid memory issues)
+- **Recursive processing**:
+  - Symbolic link cycles (prevented with path tracking)
+  - Deep directory structures (configurable depth limits)
+  - Permission issues in subdirectories (graceful handling)
+  - Mixed file systems and junction points
+
 ## License
 
 [License information would go here]
 
 ## Version History
 
+- **v0.2.0**: Advanced organization features (Issue #8)
+  - **Date-based organization**: Organize files by creation/modification time with configurable date formats
+  - **Size-based organization**: Separate large files from regular files with customizable thresholds
+  - **Duplicate file detection**: SHA-256 based duplicate detection with multiple handling strategies
+  - **Recursive directory processing**: Process subdirectories with configurable depth control
+  - Enhanced command-line interface with 8 new options
+  - Comprehensive test suite for all new features
+  - Updated documentation with examples and usage patterns
+
 - **v0.1.0**: Initial release with basic file organization features
   - File categorization by extension
   - Directory creation and file moving
   - Dry-run preview mode
   - Custom configuration support
-  - Comprehensive test suite
+  - Basic test suite
 
 ## Support
 
