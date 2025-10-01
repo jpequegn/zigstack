@@ -4,33 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ZigStack is a file organization and analysis CLI tool written in Zig. It analyzes directory contents, categorizes files by extension, and provides organization previews showing how files would be grouped by type (Documents, Images, Videos, Audio, Archives, Code, Data, Configuration, Other).
+ZigStack is a file organization CLI tool written in Zig. It categorizes files by extension, provides organization previews, and can actually organize files with advanced options including date-based organization, size-based separation, duplicate detection, and recursive processing.
 
 ## Core Architecture
 
-### Single-Module Structure
-- **Entry Point**: `src/main.zig` - Contains the complete application logic
-- **Build Configuration**: `build.zig` - Standard Zig build configuration with test support
+### Single-Module Design
+- **Entry Point**: `src/main.zig` - Complete application logic (~2500 lines)
+- **Build Configuration**: `build.zig` - Standard Zig build with test support
 
-### Key Components
+### Key Data Structures
 
-**Data Structures**:
-- `FileCategory`: Enum defining file categories with string conversion
-- `FileInfo`: File metadata (name, extension, category)
-- `OrganizationPlan`: HashMap-based structure grouping files by category
+**File Management**:
+- `FileInfo`: Extended with `size`, `created_time`, `modified_time`, `hash` for advanced features
+- `FileCategory`: Enum with 9 categories (Documents, Images, Videos, Audio, Archives, Code, Data, Configuration, Other)
+- `OrganizationPlan`: HashMap for categories, StringHashMap for date/size-based directory structures
 
-**Core Functions**:
-- `categorizeFileByExtension()`: Extension-to-category mapping with case-insensitive matching
-- `getFileExtension()`: Extracts file extensions, handles edge cases (hidden files, no extension)
-- `listFiles()`: Main analysis logic - directory traversal, categorization, memory management
-- `validateDirectory()`: Directory existence and permissions validation
+**Configuration**:
+- `Config`: CLI flags including date/size/duplicate/recursive options
+- `ConfigData`: JSON-based custom category definitions
+- `DateFormat`: year, year_month, year_month_day
+- `DuplicateAction`: skip, rename, replace, keep_both
 
-**File Categorization Logic**:
-The application categorizes files into predefined categories based on extension patterns:
-- Documents: .txt, .pdf, .md, .doc, .docx, .odt, .rtf, .tex
-- Images: .jpg, .jpeg, .png, .gif, .bmp, .svg, .ico, .webp
-- Code: .zig, .c, .cpp, .py, .js, .ts, .java, .cs, .go, .rs, .sh, .bat
-- And more categories for videos, audio, archives, data, and configuration files
+**Safety**:
+- `MoveTracker`: Records all file moves for rollback capability
+- `MoveRecord`: Original and destination paths for each move
+
+### Core Function Groups
+
+**File Analysis**:
+- `getFileExtension()`: Handles regular files, hidden files, no-extension cases
+- `categorizeFileByExtension()`: Maps extensions to categories (case-insensitive)
+- `getFileStats()`: Retrieves size, timestamps from filesystem
+- `calculateFileHash()`: SHA-256 hashing for duplicate detection
+
+**Organization Logic**:
+- `listFiles()`: Main directory traversal and categorization
+- `formatDatePath()`: Converts timestamps to date-based paths (year/month/day)
+- `organizeBySizeAndCategory()`: Separates large files from regular files
+- `detectDuplicates()`: SHA-256 based duplicate detection with configurable actions
+
+**Operations**:
+- `createDirectories()`: Creates category folders with conflict handling
+- `moveFiles()`: Moves files with rollback support on errors
+- `resolveFilenameConflict()`: Auto-renames conflicting files (file_1.txt, file_2.txt, etc.)
 
 ## Development Commands
 
@@ -39,52 +55,99 @@ The application categorizes files into predefined categories based on extension 
 # Build the project
 zig build
 
-# Run with arguments
+# Run with preview mode (default, no changes)
 zig build run -- /path/to/analyze
 
-# Build and run directly
-./zig-out/bin/zigstack /path/to/analyze
+# Run with file operations
+zig build run -- --move /path/to/organize
+
+# Build directly and run
+./zig-out/bin/zigstack --move /tmp/test
 ```
 
 ### Testing
 ```bash
-# Run all tests
+# Run all tests (unit + integration + edge cases)
 zig build test
 
-# Run tests with verbose output
-zig build test -- --verbose
+# Run specific test with timeout for long-running tests
+timeout 10 zig build run -- /tmp/test_dir
 ```
 
 ### Development Workflow
 ```bash
-# Quick iteration cycle
-zig build run -- . && echo "Build successful"
+# Quick compile check
+zig build
 
 # Test-driven development
 zig build test && zig build run -- /tmp
+
+# Test advanced features
+zig build run -- --by-date --by-size --detect-dups --recursive --verbose --move /tmp/test
 ```
 
 ## CLI Interface
 
-**Basic Usage**: `zigstack <directory>`
-**Options**: `-h/--help`, `-v/--version`
+### Basic Usage
+`zigstack [OPTIONS] <directory>`
 
-The tool validates directory access, analyzes files, and outputs:
-- Total file count
-- Files grouped by category with icons
-- Organization summary with percentages
-- File extension breakdown
-- Note that it's preview-only (no files are moved)
+### Key Options
+- `-d/--dry-run`: Preview mode (default)
+- `-m/--move`: Create directories and move files
+- `--by-date --date-format [year|year-month|year-month-day]`: Organize by date
+- `--by-size --size-threshold MB`: Separate large files
+- `--detect-dups --dup-action [skip|rename|replace|keep-both]`: Handle duplicates
+- `--recursive --max-depth N`: Process subdirectories
+- `-V/--verbose`: Detailed logging
+
+### Operation Modes
+1. **Preview** (default): Shows planned organization without changes
+2. **Create** (`--create`): Creates category directories only
+3. **Move** (`--move`): Full organization with file moving
 
 ## Testing Strategy
 
-The codebase includes comprehensive unit tests for core functions:
-- `getFileExtension()`: Tests regular files, hidden files, files without extensions
-- `categorizeFileByExtension()`: Tests all category mappings, case insensitivity, unknown extensions
+Comprehensive test coverage across three levels:
+
+**Unit Tests**:
+- Extension extraction and categorization
+- Date format parsing and path generation
+- Hash calculation and duplicate detection
+- Config parsing and validation
+
+**Integration Tests**:
+- Directory creation workflows
+- File moving with conflict resolution
+- Rollback functionality on errors
+- Empty directory and special character handling
+
+**Edge Case Tests**:
+- Empty filenames, very long extensions
+- Invalid characters, hidden files
+- Boundary conditions (no extension, dots in names)
+- Date edge cases (leap years, timezones)
+- Large files and memory-efficient hashing
 
 ## Memory Management
 
-Uses Zig's GeneralPurposeAllocator with proper cleanup:
-- String duplication for file names and extensions
-- HashMap cleanup for categorization data
-- Extension counting with proper memory deallocation
+Critical memory patterns in this codebase:
+
+**Allocator Usage**:
+- GeneralPurposeAllocator for main operations
+- ArenaAllocator for temporary test data
+- Careful cleanup in defer blocks
+
+**String Handling**:
+- All FileInfo strings are duped and must be freed
+- Path buffers use std.fs.MAX_PATH_BYTES (4096)
+- Config data cleanup via ConfigData.deinit()
+
+**HashMap Management**:
+- OrganizationPlan uses both typed HashMap and StringHashMap
+- Each ArrayList in maps requires separate deinit
+- Proper iteration and cleanup in nested structures
+
+**Rollback Safety**:
+- MoveTracker dupes all paths to preserve state
+- Reverse-order rollback on any move failure
+- All recorded moves freed in MoveTracker.deinit()
