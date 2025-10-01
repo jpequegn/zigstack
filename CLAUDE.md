@@ -8,9 +8,12 @@ ZigStack is a file organization CLI tool written in Zig. It categorizes files by
 
 ## Core Architecture
 
-### Single-Module Design
-- **Entry Point**: `src/main.zig` - Complete application logic (~2500 lines)
-- **Build Configuration**: `build.zig` - Standard Zig build with test support
+### Modular Architecture (Phase 1)
+- **Entry Point**: `src/main.zig` - Main application entry and CLI
+- **Core Modules**: `src/core/` - File info, config, organization, tracking, utilities
+- **Commands**: `src/commands/` - Command system with organize, future commands
+- **Test Helpers**: `src/test_helpers.zig` - Reusable test utilities and scenarios
+- **Build Configuration**: `build.zig` - Multi-target build with separate test runners
 
 ### Key Data Structures
 
@@ -66,12 +69,46 @@ zig build run -- --move /path/to/organize
 ```
 
 ### Testing
+
+The build system supports multiple test targets for focused testing:
+
 ```bash
-# Run all tests (unit + integration + edge cases)
+# Run all tests (unit + integration)
 zig build test
 
-# Run specific test with timeout for long-running tests
-timeout 10 zig build run -- /tmp/test_dir
+# Run only unit tests (core modules and commands)
+zig build test-unit
+
+# Run only integration tests (backward compatibility, workflows)
+zig build test-integration
+
+# List all available build targets
+zig build --help
+```
+
+**Test Organization**:
+- **Unit Tests**: Focus on individual functions and modules
+  - `src/core/utils_test.zig` - Core utility functions
+  - `src/commands/command_test.zig` - Command parsing and routing
+- **Integration Tests**: Test multi-module workflows
+  - `src/commands/backward_compat_test.zig` - Backward compatibility scenarios
+- **Test Helpers**: `src/test_helpers.zig` provides reusable test utilities:
+  - `TestScenario` - Managed temporary test directories
+  - `createTestFile()` - File creation helpers
+  - `verifyFileMoved()` - Operation verification
+  - `countFilesInDir()` - Directory analysis
+
+**Using Test Helpers**:
+```zig
+const helpers = @import("test_helpers.zig");
+
+test "my test" {
+    var scenario = try helpers.TestScenario.init(allocator);
+    defer scenario.deinit();
+
+    try scenario.createFile("test.txt", "content");
+    // Test operations...
+}
 ```
 
 ### Development Workflow
@@ -79,8 +116,14 @@ timeout 10 zig build run -- /tmp/test_dir
 # Quick compile check
 zig build
 
-# Test-driven development
-zig build test && zig build run -- /tmp
+# Test-driven development with focused testing
+zig build test-unit && zig build test-integration
+
+# Full test suite
+zig build test
+
+# Run application
+zig build run -- /tmp/test
 
 # Test advanced features
 zig build run -- --by-date --by-size --detect-dups --recursive --verbose --move /tmp/test
@@ -107,26 +150,80 @@ zig build run -- --by-date --by-size --detect-dups --recursive --verbose --move 
 
 ## Testing Strategy
 
-Comprehensive test coverage across three levels:
+Comprehensive test coverage with modular organization:
 
-**Unit Tests**:
+### Build System Test Targets
+
+The build system provides three test execution modes:
+
+1. **`zig build test`** - All tests (unit + integration)
+   - Runs complete test suite
+   - Uses `src/main.zig` as root module for all imports
+
+2. **`zig build test-unit`** - Unit tests only
+   - Filters: `core/utils_test`, `commands/command_test`
+   - Fast execution for TDD workflows
+   - Tests individual functions and modules
+
+3. **`zig build test-integration`** - Integration tests only
+   - Filters: `commands/backward_compat_test`
+   - Tests multi-module workflows and scenarios
+   - Verifies system behavior end-to-end
+
+### Test Coverage
+
+**Unit Tests** (`test-unit`):
 - Extension extraction and categorization
 - Date format parsing and path generation
 - Hash calculation and duplicate detection
 - Config parsing and validation
+- Command parsing and routing
 
-**Integration Tests**:
+**Integration Tests** (`test-integration`):
 - Directory creation workflows
 - File moving with conflict resolution
 - Rollback functionality on errors
 - Empty directory and special character handling
+- Backward compatibility with legacy CLI
 
-**Edge Case Tests**:
+**Edge Case Coverage**:
 - Empty filenames, very long extensions
 - Invalid characters, hidden files
 - Boundary conditions (no extension, dots in names)
 - Date edge cases (leap years, timezones)
 - Large files and memory-efficient hashing
+
+### Test Helper Utilities
+
+`src/test_helpers.zig` provides reusable test infrastructure:
+
+**Core Functions**:
+- `createTempTestDir()` - Create unique temporary directories
+- `removeTempTestDir()` - Clean up test directories
+- `createTestFile()` - Create files with content
+- `createTestFilesWithExtensions()` - Batch file creation
+- `createTestDirStructure()` - Create directory hierarchies
+- `countFilesInDir()` - Count files with optional extension filter
+- `fileExistsInDir()` - Check file existence
+- `createTestFileWithSize()` - Create files of specific sizes
+- `verifyFileMoved()` - Verify file move operations
+
+**TestScenario Builder**:
+```zig
+var scenario = try TestScenario.init(allocator);
+defer scenario.deinit();  // Automatic cleanup
+
+try scenario.createFile("test.txt", "content");
+try scenario.createFiles(&[_][]const u8{".jpg", ".png"});
+try scenario.createSubdir("Documents");
+```
+
+### Adding New Tests
+
+1. Create test file in appropriate module directory
+2. Add test block with `_ = @import("path/to/test.zig");` in `src/main.zig`
+3. Use test helpers for setup/teardown
+4. Update build.zig filters if creating new test category
 
 ## Memory Management
 
