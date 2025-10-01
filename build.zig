@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.filters = &[_][]const u8{
         "core/utils_test",
         "commands/command_test",
+        "commands/analyze_test",
     };
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const unit_test_step = b.step("test-unit", "Run unit tests only");
