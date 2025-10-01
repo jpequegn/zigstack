@@ -8,6 +8,10 @@ const organization_mod = @import("core/organization.zig");
 const config_mod = @import("core/config.zig");
 const tracker_mod = @import("core/tracker.zig");
 
+// Import command modules
+const command_mod = @import("commands/command.zig");
+const organize_cmd = @import("commands/organize.zig");
+
 // Re-export types for use in main
 const FileInfo = file_info_mod.FileInfo;
 const FileCategory = file_info_mod.FileCategory;
@@ -21,6 +25,11 @@ const DateFormat = config_mod.DateFormat;
 const DuplicateAction = config_mod.DuplicateAction;
 const MoveTracker = tracker_mod.MoveTracker;
 const MoveRecord = tracker_mod.MoveRecord;
+
+// Command system types
+const Command = command_mod.Command;
+const CommandRegistry = command_mod.CommandRegistry;
+const CommandParser = command_mod.CommandParser;
 
 const VERSION = "0.1.0";
 const PROGRAM_NAME = "zigstack";
@@ -1269,37 +1278,17 @@ fn listFiles(allocator: std.mem.Allocator, dir_path: []const u8, config: *const 
     print("{s}\n", .{"============================================================"});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // If no arguments provided
-    if (args.len < 2) {
-        printError("Missing required directory argument");
-        print("\n", .{});
-        printUsage(args[0]);
-        std.process.exit(1);
-    }
+/// Execute the organize command with given arguments
+pub fn executeOrganizeCommand(allocator: std.mem.Allocator, args: []const []const u8, base_config: *Config) !void {
+    var config = base_config.*;
+    var directory_path: ?[]const u8 = null;
+    var i: usize = 0;
 
     // Parse arguments
-    var config = Config{};
-    var directory_path: ?[]const u8 = null;
-    var i: usize = 1;
-
     while (i < args.len) {
         const arg = args[i];
 
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            printUsage(args[0]);
-            return;
-        } else if (std.mem.eql(u8, arg, "--version")) {
-            printVersion();
-            return;
-        } else if (std.mem.eql(u8, arg, "--config")) {
+        if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) {
                 printError("Missing config file path after --config");
@@ -1308,15 +1297,15 @@ pub fn main() !void {
             config.config_file_path = args[i];
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--create")) {
             config.create_directories = true;
-            config.dry_run = false; // Creating implies not dry-run
+            config.dry_run = false;
         } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--move")) {
             config.move_files = true;
-            config.create_directories = true; // Moving implies creating directories
-            config.dry_run = false; // Moving implies not dry-run
+            config.create_directories = true;
+            config.dry_run = false;
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--dry-run")) {
             config.dry_run = true;
-            config.create_directories = false; // Dry-run implies not creating
-            config.move_files = false; // Dry-run implies not moving
+            config.create_directories = false;
+            config.move_files = false;
         } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
             config.verbose = true;
         } else if (std.mem.eql(u8, arg, "--by-date")) {
@@ -1373,7 +1362,6 @@ pub fn main() !void {
             };
         } else if (std.mem.startsWith(u8, arg, "-")) {
             printError("Unknown option");
-            print("Try '{s} --help' for more information.\n", .{args[0]});
             std.process.exit(1);
         } else {
             // Positional argument (directory path)
@@ -1390,8 +1378,6 @@ pub fn main() !void {
     // Ensure directory path was provided
     const path = directory_path orelse {
         printError("Missing required directory argument");
-        print("\n", .{});
-        printUsage(args[0]);
         std.process.exit(1);
     };
 
@@ -1423,6 +1409,61 @@ pub fn main() !void {
         }
         std.process.exit(1);
     };
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    // If no arguments provided
+    if (args.len < 2) {
+        printError("Missing required directory argument");
+        print("\n", .{});
+        printUsage(args[0]);
+        std.process.exit(1);
+    }
+
+    // Check for global help/version flags (only if no subcommand detected)
+    const first_arg = args[1];
+    const is_help = std.mem.eql(u8, first_arg, "-h") or std.mem.eql(u8, first_arg, "--help");
+    const is_version = std.mem.eql(u8, first_arg, "--version");
+
+    if (is_help) {
+        printUsage(args[0]);
+        return;
+    } else if (is_version) {
+        printVersion();
+        return;
+    }
+
+    // Set up command registry
+    var registry = CommandRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.register(organize_cmd.getCommand());
+
+    // Parse for command
+    const parse_result = try CommandParser.parse(allocator, args[1..]);
+
+    var config = Config{};
+
+    if (parse_result.command_name) |cmd_name| {
+        // Command specified explicitly
+        if (registry.get(cmd_name)) |cmd| {
+            try cmd.execute(allocator, parse_result.command_args, &config);
+        } else {
+            printError("Unknown command");
+            print("Try '{s} --help' for more information.\n", .{args[0]});
+            registry.printAllHelp();
+            std.process.exit(1);
+        }
+    } else {
+        // Backward compatibility - default to organize command
+        try executeOrganizeCommand(allocator, args[1..], &config);
+    }
 }
 
 // Tests
@@ -2409,4 +2450,9 @@ test "calculateFileHash with different content" {
     // Same file should produce same hash
     const hash1_again = try calculateFileHash(file1_name);
     try testing.expect(std.mem.eql(u8, &hash1, &hash1_again));
+}
+
+// Import command tests
+test {
+    _ = @import("commands/command_test.zig");
 }
