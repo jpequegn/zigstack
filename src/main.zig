@@ -2455,4 +2455,5 @@ test "calculateFileHash with different content" {
 // Import command tests
 test {
     _ = @import("commands/command_test.zig");
+    _ = @import("commands/backward_compat_test.zig");
 }
