@@ -50,7 +50,50 @@ alias zigstack="/path/to/zigstack/zig-out/bin/zigstack"
 
 ```bash
 zigstack [OPTIONS] <directory>
+# or
+zigstack <command> [OPTIONS] <directory>
 ```
+
+### Command-Based Interface (v0.3.0+)
+
+Starting with v0.3.0, ZigStack supports a command-based interface while maintaining 100% backward compatibility with v0.2.0 usage patterns.
+
+#### Available Commands
+- `organize` - Organize files by extension, date, size, or duplicates (default command)
+
+#### Backward Compatibility
+
+**All v0.2.0 usage patterns continue to work exactly as before:**
+
+```bash
+# v0.2.0 style (still works)
+zigstack /path/to/directory
+zigstack --move /path/to/directory
+zigstack --by-date --move /path
+zigstack --verbose --dry-run /path
+
+# v0.3.0 style (new, explicit command)
+zigstack organize /path/to/directory
+zigstack organize --move /path/to/directory
+zigstack organize --by-date --move /path
+zigstack organize --verbose --dry-run /path
+```
+
+Both styles produce identical results. The command-based interface is optional and provides a foundation for future commands while ensuring existing scripts and workflows remain unaffected.
+
+#### Migration Guide
+
+**No migration required!** Your existing scripts, aliases, and workflows will continue to work without any changes.
+
+If you want to use the new command-based interface:
+- Simply prefix your existing commands with `organize`
+- All flags and options remain the same
+- Help is available with `zigstack organize --help`
+
+**Future commands** (planned for future releases):
+- `zigstack stats` - Analyze directory statistics
+- `zigstack search` - Search for files by various criteria
+- `zigstack compare` - Compare directory structures
 
 ### Command-Line Options
 
@@ -525,6 +568,14 @@ zigstack robustly handles various edge cases:
 [License information would go here]
 
 ## Version History
+
+- **v0.3.0** (In Development): Command infrastructure and backward compatibility (Issues #17, #18, #19)
+  - **Command-based interface**: New subcommand system with `organize` command
+  - **100% backward compatibility**: All v0.2.0 CLI patterns continue to work unchanged
+  - **Modular architecture**: Refactored codebase with separate command and core modules
+  - **Enhanced testing**: 20+ new tests for command routing and backward compatibility
+  - **Future-ready**: Foundation for additional commands (stats, search, compare, etc.)
+  - **Comprehensive documentation**: Updated README with migration guide and examples
 
 - **v0.2.0**: Advanced organization features (Issue #8)
   - **Date-based organization**: Organize files by creation/modification time with configurable date formats
