@@ -80,7 +80,7 @@ pub const CommandParser = struct {
         is_path: bool, // true if first arg looks like a path (for backward compatibility)
     };
 
-    pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !ParseResult {
+    pub fn parse(_: std.mem.Allocator, args: []const []const u8) !ParseResult {
         if (args.len == 0) {
             return ParseResult{
                 .command_name = null,

@@ -39,13 +39,17 @@ const organize_help_text =
 ;
 
 fn organizeExecute(allocator: std.mem.Allocator, args: []const []const u8, config: *Config) !void {
-    // This will call the existing organize functionality from main
-    // For now, it's a placeholder - the actual implementation will be
-    // wired up when we integrate with main.zig
-    _ = allocator;
-    _ = args;
-    _ = config;
-    std.debug.print("Organize command would execute here with provided args\n", .{});
+    // Check for help flag
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            organizeHelp();
+            return;
+        }
+    }
+
+    // Import the main module to access executeOrganizeCommand
+    const main = @import("../main.zig");
+    try main.executeOrganizeCommand(allocator, args, config);
 }
 
 fn organizeHelp() void {
