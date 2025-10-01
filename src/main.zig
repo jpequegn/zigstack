@@ -2451,3 +2451,8 @@ test "calculateFileHash with different content" {
     const hash1_again = try calculateFileHash(file1_name);
     try testing.expect(std.mem.eql(u8, &hash1, &hash1_again));
 }
+
+// Import command tests
+test {
+    _ = @import("commands/command_test.zig");
+}
