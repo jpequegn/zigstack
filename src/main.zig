@@ -2,201 +2,28 @@ const std = @import("std");
 const print = std.debug.print;
 const crypto = std.crypto;
 
+// Import core modules
+const file_info_mod = @import("core/file_info.zig");
+const organization_mod = @import("core/organization.zig");
+const config_mod = @import("core/config.zig");
+const tracker_mod = @import("core/tracker.zig");
+
+// Re-export types for use in main
+const FileInfo = file_info_mod.FileInfo;
+const FileCategory = file_info_mod.FileCategory;
+const OrganizationPlan = organization_mod.OrganizationPlan;
+const Config = config_mod.Config;
+const ConfigData = config_mod.ConfigData;
+const Category = config_mod.Category;
+const DisplayConfig = config_mod.DisplayConfig;
+const BehaviorConfig = config_mod.BehaviorConfig;
+const DateFormat = config_mod.DateFormat;
+const DuplicateAction = config_mod.DuplicateAction;
+const MoveTracker = tracker_mod.MoveTracker;
+const MoveRecord = tracker_mod.MoveRecord;
+
 const VERSION = "0.1.0";
 const PROGRAM_NAME = "zigstack";
-
-const FileInfo = struct {
-    name: []const u8,
-    extension: []const u8,
-    category: FileCategory,
-
-    // Advanced organization fields
-    size: u64,            // File size in bytes for size-based organization
-    created_time: i64,    // Unix timestamp for creation time
-    modified_time: i64,   // Unix timestamp for modification time
-    hash: [32]u8,         // SHA-256 hash for duplicate detection
-};
-
-const DateFormat = enum {
-    year,           // Organize by year only (2023/)
-    year_month,     // Organize by year and month (2023/01/)
-    year_month_day, // Organize by year, month, and day (2023/01/15/)
-};
-
-const DuplicateAction = enum {
-    skip,      // Skip duplicate files
-    rename,    // Rename duplicate files
-    replace,   // Replace existing files with duplicates
-    keep_both, // Keep both files with different names
-};
-
-const FileCategory = enum {
-    Documents,
-    Images,
-    Videos,
-    Audio,
-    Archives,
-    Code,
-    Data,
-    Configuration,
-    Other,
-
-    pub fn toString(self: FileCategory) []const u8 {
-        return switch (self) {
-            .Documents => "Documents",
-            .Images => "Images",
-            .Videos => "Videos",
-            .Audio => "Audio",
-            .Archives => "Archives",
-            .Code => "Code",
-            .Data => "Data",
-            .Configuration => "Configuration",
-            .Other => "Other",
-        };
-    }
-
-    pub fn toDirectoryName(self: FileCategory) []const u8 {
-        return switch (self) {
-            .Documents => "documents",
-            .Images => "images",
-            .Videos => "videos",
-            .Audio => "audio",
-            .Archives => "archives",
-            .Code => "code",
-            .Data => "data",
-            .Configuration => "config",
-            .Other => "misc",
-        };
-    }
-};
-
-const OrganizationPlan = struct {
-    categories: std.hash_map.HashMap(FileCategory, std.ArrayList(FileInfo), std.hash_map.AutoContext(FileCategory), 80),
-    // For date-based and custom organization - maps directory path to files
-    directories: std.StringHashMap(std.ArrayList(FileInfo)),
-    total_files: usize,
-    is_date_based: bool = false, // Track organization type
-    is_size_based: bool = false, // Track size-based organization
-};
-
-const MoveRecord = struct {
-    original_path: []const u8,
-    destination_path: []const u8,
-};
-
-const MoveTracker = struct {
-    moves: std.ArrayList(MoveRecord),
-    allocator: std.mem.Allocator,
-
-    fn init(allocator: std.mem.Allocator) MoveTracker {
-        return MoveTracker{
-            .moves = std.ArrayList(MoveRecord){},
-            .allocator = allocator,
-        };
-    }
-
-    fn deinit(self: *MoveTracker) void {
-        for (self.moves.items) |move_record| {
-            self.allocator.free(move_record.original_path);
-            self.allocator.free(move_record.destination_path);
-        }
-        self.moves.deinit(self.allocator);
-    }
-
-    fn recordMove(self: *MoveTracker, original_path: []const u8, destination_path: []const u8) !void {
-        const original_copy = try self.allocator.dupe(u8, original_path);
-        const destination_copy = try self.allocator.dupe(u8, destination_path);
-
-        try self.moves.append(self.allocator, MoveRecord{
-            .original_path = original_copy,
-            .destination_path = destination_copy,
-        });
-    }
-
-    fn rollback(self: *MoveTracker, config: *const Config) !void {
-        if (config.verbose) {
-            print("Rolling back {} file moves...\n", .{self.moves.items.len});
-        }
-
-        // Rollback in reverse order
-        var i = self.moves.items.len;
-        while (i > 0) {
-            i -= 1;
-            const move_record = self.moves.items[i];
-
-            if (config.verbose) {
-                print("Moving {s} back to {s}\n", .{ move_record.destination_path, move_record.original_path });
-            }
-
-            std.fs.cwd().rename(move_record.destination_path, move_record.original_path) catch |err| {
-                printError("Failed to rollback file move");
-                print("Could not move {s} back to {s}: {}\n", .{ move_record.destination_path, move_record.original_path, err });
-                return err;
-            };
-        }
-
-        if (config.verbose) {
-            print("Rollback complete.\n", .{});
-        }
-    }
-};
-
-const Category = struct {
-    description: []const u8,
-    extensions: []const []const u8,
-    color: []const u8,
-    priority: u32,
-};
-
-const DisplayConfig = struct {
-    show_categories: bool = true,
-    show_colors: bool = false,
-    group_by_category: bool = true,
-    sort_categories_by_priority: bool = true,
-    show_category_summaries: bool = true,
-    show_uncategorized: bool = true,
-    uncategorized_label: []const u8 = "Other",
-};
-
-const BehaviorConfig = struct {
-    case_sensitive_extensions: bool = false,
-    include_hidden_files: bool = false,
-    include_directories: bool = false,
-    max_depth: u32 = 1,
-};
-
-const ConfigData = struct {
-    version: []const u8,
-    categories: std.StringHashMap(Category),
-    display: DisplayConfig,
-    behavior: BehaviorConfig,
-
-    pub fn deinit(self: *ConfigData) void {
-        self.categories.deinit();
-    }
-};
-
-const Config = struct {
-    // File management flags
-    create_directories: bool = false,
-    move_files: bool = false,
-    dry_run: bool = true,
-    verbose: bool = false,
-
-    // Configuration file support
-    config_file_path: ?[]const u8 = null,
-    data: ?ConfigData = null,
-
-    // Advanced organization options
-    organize_by_date: bool = false,                   // Enable date-based organization
-    organize_by_size: bool = false,                   // Enable size-based organization
-    detect_duplicates: bool = false,                  // Enable duplicate file detection
-    recursive: bool = false,                          // Enable recursive directory processing
-    max_depth: u32 = 10,                              // Maximum recursion depth
-    size_threshold_mb: u64 = 100,                     // Size threshold for large files (MB)
-    date_format: DateFormat = .year_month,            // Date organization format
-    duplicate_action: DuplicateAction = .skip,        // Action for duplicate files
-};
 
 const usage_text =
     \\Usage: {s} [OPTIONS] <directory>
