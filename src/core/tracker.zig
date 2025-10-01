@@ -15,7 +15,7 @@ pub const MoveTracker = struct {
 
     pub fn init(allocator: std.mem.Allocator) MoveTracker {
         return MoveTracker{
-            .moves = std.ArrayList(MoveRecord).init(allocator),
+            .moves = std.ArrayList(MoveRecord){},
             .allocator = allocator,
         };
     }
@@ -25,14 +25,14 @@ pub const MoveTracker = struct {
             self.allocator.free(move_record.original_path);
             self.allocator.free(move_record.destination_path);
         }
-        self.moves.deinit();
+        self.moves.deinit(self.allocator);
     }
 
     pub fn recordMove(self: *MoveTracker, original_path: []const u8, destination_path: []const u8) !void {
         const original_copy = try self.allocator.dupe(u8, original_path);
         const destination_copy = try self.allocator.dupe(u8, destination_path);
 
-        try self.moves.append(MoveRecord{
+        try self.moves.append(self.allocator, MoveRecord{
             .original_path = original_copy,
             .destination_path = destination_copy,
         });
