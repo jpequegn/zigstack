@@ -13,6 +13,7 @@ const utils = @import("core/utils.zig");
 const command_mod = @import("commands/command.zig");
 const organize_cmd = @import("commands/organize.zig");
 const analyze_cmd = @import("commands/analyze.zig");
+const dedupe_cmd = @import("commands/dedupe.zig");
 
 // Re-export types for use in main
 const FileInfo = file_info_mod.FileInfo;
@@ -147,6 +148,7 @@ pub fn main() !void {
     defer registry.deinit();
     try registry.register(organize_cmd.getCommand());
     try registry.register(analyze_cmd.getCommand());
+    try registry.register(dedupe_cmd.getCommand());
 
     // Parse for command
     const parse_result = try CommandParser.parse(allocator, args[1..]);
