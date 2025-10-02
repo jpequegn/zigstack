@@ -37,13 +37,21 @@ const dedupe_help_text =
     \\  --summary         Show summary only, no actions
     \\  --dry-run         Preview actions without making changes (default)
     \\  --delete          Actually delete duplicate files (use with caution!)
+    \\  --hardlink        Replace duplicates with hardlinks (saves space, keeps files)
     \\  --recursive       Scan subdirectories recursively (default: true)
     \\  --min-size N      Minimum file size in bytes to consider (default: 0)
     \\  -V, --verbose     Enable verbose logging
     \\
+    \\Hardlink Notes:
+    \\  - Hardlinks only work on the same filesystem
+    \\  - All hardlinked files point to the same data
+    \\  - Editing one hardlink affects all copies
+    \\  - Cannot hardlink across different filesystems/partitions
+    \\
     \\Examples:
     \\  zigstack dedupe /path/to/directory
     \\  zigstack dedupe --auto keep-newest --delete /path
+    \\  zigstack dedupe --auto keep-oldest --hardlink /path
     \\  zigstack dedupe --summary /downloads
     \\  zigstack dedupe --min-size 1048576 /media
     \\
@@ -153,6 +161,7 @@ const DedupeOptions = struct {
     interactive: bool = true,
     summary_only: bool = false,
     dry_run: bool = true,
+    use_hardlinks: bool = false,
     recursive: bool = true,
     min_size: u64 = 0,
     verbose: bool = false,
@@ -337,6 +346,87 @@ fn selectFileToKeep(group: *DuplicateGroup, strategy: DedupeStrategy) usize {
 }
 
 // ============================================================================
+// Hardlink Operations
+// ============================================================================
+
+/// Create a hardlink from source to target
+/// Note: Will fail naturally if files are on different filesystems
+fn createHardlink(source: []const u8, target: []const u8) !void {
+    // Create temporary path for backup
+    var backup_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const backup_path = try std.fmt.bufPrint(&backup_path_buf, "{s}.zigstack_backup", .{target});
+
+    // Rename target to backup (in case we need to rollback)
+    try std.fs.cwd().rename(target, backup_path);
+    errdefer std.fs.cwd().rename(backup_path, target) catch {};
+
+    // Create hardlink - this will fail if files are on different filesystems
+    std.posix.link(source, target) catch |err| {
+        // Rollback rename
+        std.fs.cwd().rename(backup_path, target) catch {};
+        return err;
+    };
+
+    // Delete backup
+    try std.fs.cwd().deleteFile(backup_path);
+}
+
+/// Replace duplicate files with hardlinks
+fn applyHardlinks(
+    _: std.mem.Allocator,
+    result: *DedupeResult,
+    options: DedupeOptions,
+) !usize {
+    if (result.duplicate_groups.len == 0) return 0;
+    if (options.strategy == null) {
+        printWarning("No strategy specified for hardlink creation");
+        return 0;
+    }
+
+    var hardlinks_created: usize = 0;
+    var errors_encountered: usize = 0;
+
+    for (result.duplicate_groups) |*group| {
+        if (group.files.items.len <= 1) continue;
+
+        const keep_idx = selectFileToKeep(group, options.strategy.?);
+        const source_path = group.files.items[keep_idx].path;
+
+        if (options.verbose) {
+            printInfo("Creating hardlinks for group, keeping:");
+            print(" {s}\n", .{source_path});
+        }
+
+        for (group.files.items, 0..) |file, idx| {
+            if (idx == keep_idx) continue;
+
+            if (options.verbose) {
+                printInfo("  Hardlinking:");
+                print(" {s} -> {s}\n", .{ file.path, source_path });
+            }
+
+            createHardlink(source_path, file.path) catch |err| {
+                errors_encountered += 1;
+                if (options.verbose) {
+                    printWarning("Failed to create hardlink:");
+                    print(" {s} ({any})\n", .{ file.path, err });
+                }
+                continue;
+            };
+
+            hardlinks_created += 1;
+        }
+    }
+
+    if (errors_encountered > 0) {
+        printWarning("Encountered errors while creating hardlinks:");
+        print(" {d} failed\n", .{errors_encountered});
+    }
+
+    return hardlinks_created;
+}
+
+// ============================================================================
 // Display Functions
 // ============================================================================
 
@@ -471,6 +561,9 @@ fn dedupeExecute(allocator: std.mem.Allocator, args: []const []const u8, config:
             options.dry_run = true;
         } else if (std.mem.eql(u8, arg, "--delete")) {
             options.dry_run = false;
+        } else if (std.mem.eql(u8, arg, "--hardlink")) {
+            options.use_hardlinks = true;
+            options.dry_run = false;
         } else if (std.mem.eql(u8, arg, "--recursive")) {
             options.recursive = true;
         } else if (std.mem.eql(u8, arg, "--min-size")) {
@@ -502,12 +595,33 @@ fn dedupeExecute(allocator: std.mem.Allocator, args: []const []const u8, config:
     // Display results
     try printDuplicateGroups(&result, options);
 
-    // Warn if in dry-run mode
-    if (!options.dry_run and result.duplicate_groups.len > 0) {
+    // Apply hardlinks if requested
+    if (options.use_hardlinks and result.duplicate_groups.len > 0) {
+        if (options.strategy == null) {
+            printError("--hardlink requires a strategy (--auto keep-oldest/keep-newest/keep-largest)");
+            return error.MissingStrategy;
+        }
+
+        print("\n", .{});
+        printInfo("Creating hardlinks...");
+        print("\n", .{});
+
+        const hardlinks_created = try applyHardlinks(allocator, &result, options);
+
+        print("\n", .{});
+        printSuccess("Hardlinks created:");
+        print(" {d}\n", .{hardlinks_created});
+
+        const space_saved = try formatSize(result.total_space_savings);
+        defer std.heap.page_allocator.free(space_saved);
+        printSuccess("Space saved:");
+        print(" {s}\n", .{space_saved});
+        print("\n", .{});
+    } else if (!options.dry_run and !options.use_hardlinks and result.duplicate_groups.len > 0) {
         printWarning("File deletion is not yet implemented in this version.");
         print("\n", .{});
     } else if (options.dry_run and result.duplicate_groups.len > 0) {
-        printInfo("This is a preview. Use --delete to actually remove duplicates.");
+        printInfo("This is a preview. Use --delete to remove or --hardlink to replace with hardlinks.");
         print("\n", .{});
     }
 }
