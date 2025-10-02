@@ -12,6 +12,7 @@ const utils = @import("core/utils.zig");
 // Import command modules
 const command_mod = @import("commands/command.zig");
 const organize_cmd = @import("commands/organize.zig");
+const analyze_cmd = @import("commands/analyze.zig");
 
 // Re-export types for use in main
 const FileInfo = file_info_mod.FileInfo;
@@ -145,6 +146,7 @@ pub fn main() !void {
     var registry = CommandRegistry.init(allocator);
     defer registry.deinit();
     try registry.register(organize_cmd.getCommand());
+    try registry.register(analyze_cmd.getCommand());
 
     // Parse for command
     const parse_result = try CommandParser.parse(allocator, args[1..]);
