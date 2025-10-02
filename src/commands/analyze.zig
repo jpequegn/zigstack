@@ -6,11 +6,13 @@ const config_mod = @import("../core/config.zig");
 const file_info_mod = @import("../core/file_info.zig");
 const utils = @import("../core/utils.zig");
 const command_mod = @import("command.zig");
+const content_metadata = @import("../core/content_metadata.zig");
 
 // Type exports
 pub const Config = config_mod.Config;
 pub const FileCategory = file_info_mod.FileCategory;
 pub const Command = command_mod.Command;
+pub const ContentMetadata = content_metadata.ContentMetadata;
 
 // Utility function shortcuts
 const printError = utils.printError;
@@ -34,6 +36,7 @@ const analyze_help_text =
     \\  --max-depth N     Maximum directory depth (default: unlimited)
     \\  --top N           Show top N largest files/directories (default: 10)
     \\  --json            Output results in JSON format
+    \\  --content         Enable detailed content analysis (metadata for images, docs, code)
     \\  --recursive       Process directories recursively (default: true)
     \\  -V, --verbose     Enable verbose logging
     \\
@@ -42,6 +45,7 @@ const analyze_help_text =
     \\  zigstack analyze --top 20 /path
     \\  zigstack analyze --min-size 10 --json /path
     \\  zigstack analyze --max-depth 3 /path
+    \\  zigstack analyze --content /path/to/media
     \\
 ;
 
@@ -54,6 +58,13 @@ pub const FileSize = struct {
     path: []const u8,
     size: u64,
     category: FileCategory,
+    content_metadata: ?ContentMetadata = null,
+
+    pub fn deinit(self: *FileSize, allocator: std.mem.Allocator) void {
+        if (self.content_metadata) |*metadata| {
+            metadata.deinit(allocator);
+        }
+    }
 };
 
 /// Category size statistics
@@ -76,8 +87,11 @@ pub const AnalysisResult = struct {
         self.allocator.free(self.category_stats);
 
         // Free largest files
-        for (self.largest_files) |file| {
+        for (self.largest_files) |*file| {
             self.allocator.free(file.path);
+            if (file.content_metadata) |*metadata| {
+                metadata.deinit(self.allocator);
+            }
         }
         self.allocator.free(self.largest_files);
     }
@@ -239,6 +253,7 @@ const AnalysisOptions = struct {
     max_depth: ?u32 = null,
     top_n: usize = 10,
     json_output: bool = false,
+    content_analysis: bool = false,
     verbose: bool = false,
 };
 
@@ -392,12 +407,30 @@ fn traverseDirectory(
                 stats.file_count += 1;
             }
 
+            // Read content metadata if enabled
+            var metadata: ?ContentMetadata = null;
+            if (options.content_analysis) {
+                metadata = content_metadata.readContentMetadata(
+                    allocator,
+                    file_path,
+                    extension,
+                    category,
+                ) catch blk: {
+                    if (options.verbose) {
+                        printWarning("Failed to read metadata for:");
+                        print(" {s}\n", .{file_path});
+                    }
+                    break :blk null;
+                };
+            }
+
             // Add to all files list
             const file_path_owned = try allocator.dupe(u8, file_path);
             try all_files.append(allocator, FileSize{
                 .path = file_path_owned,
                 .size = size,
                 .category = category,
+                .content_metadata = metadata,
             });
         }
     }
@@ -433,6 +466,37 @@ fn printBarChart(label: []const u8, size: u64, max_size: u64, bar_width: usize) 
         }
     }
     print("] {d:>6.1}%\n", .{percentage * 100.0});
+}
+
+fn printContentMetadata(metadata: ContentMetadata) void {
+    switch (metadata) {
+        .image => |img| {
+            print("    📸 {d}x{d} {s} ({d}-bit)\n", .{ img.width, img.height, img.format, img.color_depth });
+        },
+        .video => |vid| {
+            print("    🎬 {d}x{d} {s}/{s} ({d:.1}s)\n", .{ vid.width, vid.height, vid.format, vid.codec, vid.duration_seconds });
+        },
+        .audio => |aud| {
+            print("    🎵 {s} {d}kbps @ {d}Hz ({d:.1}s)\n", .{ aud.format, aud.bitrate / 1000, aud.sample_rate, aud.duration_seconds });
+        },
+        .document => |doc| {
+            if (doc.page_count) |pages| {
+                print("    📄 {d} words, {d} lines, {d} pages\n", .{ doc.word_count, doc.line_count, pages });
+            } else {
+                print("    📄 {d} words, {d} lines\n", .{ doc.word_count, doc.line_count });
+            }
+        },
+        .code => |code| {
+            print("    💻 {s}: {d} lines ({d} code, {d} comments, {d} blank)\n", .{
+                code.language,
+                code.line_count,
+                code.code_lines,
+                code.comment_lines,
+                code.blank_lines,
+            });
+        },
+        .none => {},
+    }
 }
 
 fn printResults(result: AnalysisResult) !void {
@@ -477,6 +541,11 @@ fn printResults(result: AnalysisResult) !void {
             defer std.heap.page_allocator.free(file_size_str);
 
             print("{d:>3}. {s:<10} {s}\n", .{ i + 1, file_size_str, file.path });
+
+            // Print content metadata if available
+            if (file.content_metadata) |metadata| {
+                printContentMetadata(metadata);
+            }
         }
     }
 
@@ -563,6 +632,8 @@ fn analyzeExecute(allocator: std.mem.Allocator, args: []const []const u8, config
             options.top_n = try std.fmt.parseInt(usize, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--json")) {
             options.json_output = true;
+        } else if (std.mem.eql(u8, arg, "--content")) {
+            options.content_analysis = true;
         } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
         } else if (arg[0] != '-') {
