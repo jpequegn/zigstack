@@ -25,29 +25,60 @@ const getFileStats = utils.getFileStats;
 const archive_help_text =
     \\Usage: zigstack archive [OPTIONS] <directory>
     \\
-    \\Archive old files based on modification time.
+    \\Archive old files based on modification time with optional compression.
     \\
     \\Arguments:
     \\  <directory>       Directory path to archive from
     \\
     \\Options:
-    \\  -h, --help               Display this help message
-    \\  --older-than <DURATION>  Age threshold (1d, 7d, 1mo, 6mo, 1y)
-    \\  --dest <PATH>            Archive destination directory (required)
-    \\  --preserve-structure     Keep original directory structure
-    \\  --flatten                Flatten all files into destination (default)
-    \\  --move                   Move instead of copy (remove from source)
-    \\  --categories <LIST>      Only archive specific categories (comma-separated)
-    \\  --min-size <SIZE>        Only archive files above size (in MB)
-    \\  -d, --dry-run            Show what would happen without doing it
-    \\  -V, --verbose            Enable verbose logging
+    \\  -h, --help                  Display this help message
+    \\  --older-than <DURATION>     Age threshold (1d, 7d, 1mo, 6mo, 1y)
+    \\  --dest <PATH>               Archive destination directory (required)
+    \\  --preserve-structure        Keep original directory structure
+    \\  --flatten                   Flatten all files into destination (default)
+    \\  --move                      Move instead of copy (remove from source)
+    \\  --categories <LIST>         Only archive specific categories (comma-separated)
+    \\  --min-size <SIZE>           Only archive files above size (in MB)
+    \\  --compress <FORMAT>         Compression format: none, tar.gz (default: none)
+    \\  --compression-level <1-9>   Compression level (default: 6)
+    \\  --archive-name <NAME>       Custom archive filename (for compressed archives)
+    \\  -d, --dry-run               Show what would happen without doing it
+    \\  -V, --verbose               Enable verbose logging
     \\
     \\Examples:
     \\  zigstack archive --older-than 6mo --dest ~/Archive /path
     \\  zigstack archive --older-than 1y --move --dest ~/Archive /path
     \\  zigstack archive --older-than 30d --preserve-structure --dest ~/Archive /path
+    \\  zigstack archive --compress tar.gz --older-than 1y --dest ~/Archive /path
     \\
 ;
+
+/// Compression format for archives
+pub const CompressionFormat = enum {
+    none,
+    targz,
+    // zip, // TODO: Add zip support if Zig std library supports it
+
+    pub fn fromString(s: []const u8) ?CompressionFormat {
+        if (std.mem.eql(u8, s, "none")) return .none;
+        if (std.mem.eql(u8, s, "tar.gz") or std.mem.eql(u8, s, "targz")) return .targz;
+        return null;
+    }
+
+    pub fn toString(self: CompressionFormat) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .targz => "tar.gz",
+        };
+    }
+
+    pub fn extension(self: CompressionFormat) []const u8 {
+        return switch (self) {
+            .none => "",
+            .targz => ".tar.gz",
+        };
+    }
+};
 
 /// Duration represents a time duration for filtering files
 pub const Duration = struct {
@@ -107,6 +138,9 @@ pub const ArchiveConfig = struct {
     min_size_mb: ?u64,
     dry_run: bool,
     verbose: bool,
+    compress: CompressionFormat,
+    compression_level: u8,
+    archive_name: ?[]const u8,
 
     pub fn init() ArchiveConfig {
         return ArchiveConfig{
@@ -119,6 +153,9 @@ pub const ArchiveConfig = struct {
             .min_size_mb = null,
             .dry_run = false,
             .verbose = false,
+            .compress = .none,
+            .compression_level = 6, // Default compression level
+            .archive_name = null,
         };
     }
 };
@@ -129,6 +166,7 @@ pub const ArchiveStats = struct {
     archived_files: usize,
     total_size: u64,
     archived_size: u64,
+    compressed_size: u64,
     categories: std.StringHashMap(usize),
 
     pub fn init(allocator: std.mem.Allocator) ArchiveStats {
@@ -137,8 +175,20 @@ pub const ArchiveStats = struct {
             .archived_files = 0,
             .total_size = 0,
             .archived_size = 0,
+            .compressed_size = 0,
             .categories = std.StringHashMap(usize).init(allocator),
         };
+    }
+
+    pub fn compressionRatio(self: *const ArchiveStats) f64 {
+        if (self.archived_size == 0) return 0.0;
+        return @as(f64, @floatFromInt(self.compressed_size)) / @as(f64, @floatFromInt(self.archived_size));
+    }
+
+    pub fn compressionSavings(self: *const ArchiveStats) f64 {
+        if (self.archived_size == 0) return 0.0;
+        const saved = @as(i64, @intCast(self.archived_size)) - @as(i64, @intCast(self.compressed_size));
+        return @as(f64, @floatFromInt(saved)) / @as(f64, @floatFromInt(self.archived_size)) * 100.0;
     }
 
     pub fn deinit(self: *ArchiveStats) void {
@@ -450,6 +500,21 @@ fn displayStats(stats: *const ArchiveStats, config: *const ArchiveConfig) void {
         print("Archived size: {d:.2} MB\n", .{archived_size_mb});
     }
 
+    // Display compression information if compression is enabled
+    if (config.compress != .none and stats.compressed_size > 0) {
+        const compressed_size_mb = @as(f64, @floatFromInt(stats.compressed_size)) / (1024.0 * 1024.0);
+        const compressed_size_gb = compressed_size_mb / 1024.0;
+
+        if (compressed_size_gb >= 1.0) {
+            print("Compressed size: {d:.2} GB\n", .{compressed_size_gb});
+        } else {
+            print("Compressed size: {d:.2} MB\n", .{compressed_size_mb});
+        }
+
+        const savings = stats.compressionSavings();
+        print("Compression savings: {d:.1}%\n", .{savings});
+    }
+
     if (stats.archived_files > 0) {
         print("\nArchiving by category:\n", .{});
         print("{s}\n", .{"----------------------------------------"});
@@ -468,6 +533,9 @@ fn displayStats(stats: *const ArchiveStats, config: *const ArchiveConfig) void {
         print("Remove --dry-run to perform the archive operation.\n", .{});
     } else {
         print("Archive destination: {s}\n", .{config.dest_path});
+        if (config.compress != .none) {
+            print("Compression format: {s}\n", .{config.compress.toString()});
+        }
         if (config.move_files) {
             print("Files have been moved (removed from source).\n", .{});
         } else {
@@ -548,6 +616,40 @@ pub fn executeArchiveCommand(allocator: std.mem.Allocator, args: []const []const
                 print("Expected a number, got: {s}\n", .{args[i]});
                 std.process.exit(1);
             };
+        } else if (std.mem.eql(u8, arg, "--compress")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value after --compress");
+                std.process.exit(1);
+            }
+            archive_config.compress = CompressionFormat.fromString(args[i]) orelse {
+                printError("Invalid compression format");
+                print("Expected: none, tar.gz, got: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--compression-level")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value after --compression-level");
+                std.process.exit(1);
+            }
+            const level = std.fmt.parseInt(u8, args[i], 10) catch {
+                printError("Invalid compression level");
+                print("Expected a number 1-9, got: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+            if (level < 1 or level > 9) {
+                printError("Compression level must be between 1 and 9");
+                std.process.exit(1);
+            }
+            archive_config.compression_level = level;
+        } else if (std.mem.eql(u8, arg, "--archive-name")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value after --archive-name");
+                std.process.exit(1);
+            }
+            archive_config.archive_name = args[i];
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--dry-run")) {
             archive_config.dry_run = true;
         } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
