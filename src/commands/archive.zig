@@ -1,5 +1,7 @@
 const std = @import("std");
 const print = std.debug.print;
+const tar = std.tar;
+const compress = std.compress;
 
 // Core module imports
 const config_mod = @import("../core/config.zig");
@@ -374,6 +376,28 @@ fn categorizeFileByExtension(extension: []const u8) FileCategory {
     return .Other;
 }
 
+/// Generate archive name with timestamp
+fn generateArchiveName(allocator: std.mem.Allocator, config: *const ArchiveConfig) ![]const u8 {
+    if (config.archive_name) |name| {
+        // Use custom name
+        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, config.compress.extension() });
+    }
+
+    // Generate timestamp-based name
+    const timestamp = std.time.timestamp();
+    const epoch_seconds: u64 = @intCast(timestamp);
+    const epoch_day_seconds = std.time.epoch.EpochSeconds{ .secs = epoch_seconds };
+    const epoch_day = epoch_day_seconds.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+
+    return try std.fmt.allocPrint(
+        allocator,
+        "archive-{d:0>4}-{d:0>2}-{d:0>2}{s}",
+        .{ year_day.year, month_day.month.numeric(), month_day.day_index + 1, config.compress.extension() },
+    );
+}
+
 /// Archive files based on configuration
 fn archiveFiles(
     allocator: std.mem.Allocator,
@@ -684,6 +708,14 @@ pub fn executeArchiveCommand(allocator: std.mem.Allocator, args: []const []const
 
     if (!has_older_than) {
         printWarning("No --older-than specified, will archive all files");
+    }
+
+    // Check for compression - currently tar.gz creates a note for future implementation
+    if (archive_config.compress == .targz) {
+        printWarning("tar.gz compression format detected");
+        print("Note: Full tar.gz compression will be implemented in a future version.\n", .{});
+        print("Currently, files will be copied/moved without compression.\n", .{});
+        print("The framework for compression tracking and display is in place.\n\n", .{});
     }
 
     // Validate source directory exists
