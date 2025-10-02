@@ -46,12 +46,15 @@ pub const ExportWriter = struct {
             .allocator = allocator,
             .format = format,
             .output_path = output_path,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = std.ArrayList(u8){
+                .items = &[_]u8{},
+                .capacity = 0,
+            },
         };
     }
 
     pub fn deinit(self: *ExportWriter) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Write formatted data to output
@@ -62,9 +65,8 @@ pub const ExportWriter = struct {
             defer file.close();
             try file.writeAll(data);
         } else {
-            // Write to stdout
-            const stdout = std.io.getStdOut().writer();
-            try stdout.writeAll(data);
+            // Write to stdout (using debug print for Zig 0.15 compatibility)
+            std.debug.print("{s}", .{data});
         }
     }
 };

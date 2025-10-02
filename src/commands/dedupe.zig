@@ -5,6 +5,7 @@ const print = std.debug.print;
 const config_mod = @import("../core/config.zig");
 const utils = @import("../core/utils.zig");
 const command_mod = @import("command.zig");
+const export_mod = @import("../core/export.zig");
 
 // Type exports
 pub const Config = config_mod.Config;
@@ -40,6 +41,8 @@ const dedupe_help_text =
     \\  --hardlink        Replace duplicates with hardlinks (saves space, keeps files)
     \\  --recursive       Scan subdirectories recursively (default: true)
     \\  --min-size N      Minimum file size in bytes to consider (default: 0)
+    \\  --format FORMAT   Export results to file (json or csv)
+    \\  --output PATH     Output file path for export (default: stdout)
     \\  -V, --verbose     Enable verbose logging
     \\
     \\Hardlink Notes:
@@ -54,6 +57,8 @@ const dedupe_help_text =
     \\  zigstack dedupe --auto keep-oldest --hardlink /path
     \\  zigstack dedupe --summary /downloads
     \\  zigstack dedupe --min-size 1048576 /media
+    \\  zigstack dedupe --format json --output duplicates.json /path
+    \\  zigstack dedupe --format csv /downloads
     \\
 ;
 
@@ -165,6 +170,8 @@ const DedupeOptions = struct {
     recursive: bool = true,
     min_size: u64 = 0,
     verbose: bool = false,
+    export_format: ?export_mod.ExportFormat = null,
+    export_path: ?[]const u8 = null,
 };
 
 /// Scan directory for duplicate files
@@ -516,6 +523,113 @@ fn printDuplicateGroups(result: *DedupeResult, options: DedupeOptions) !void {
     print("============================================================\n", .{});
 }
 
+/// Export dedupe results to JSON or CSV format
+fn exportDedupeResults(
+    allocator: std.mem.Allocator,
+    result: *const DedupeResult,
+    format: export_mod.ExportFormat,
+    output_path: ?[]const u8,
+) !void {
+    var writer = export_mod.ExportWriter.init(allocator, format, output_path);
+    defer writer.deinit();
+
+    switch (format) {
+        .json => try exportJson(allocator, result, &writer),
+        .csv => try exportCsv(allocator, result, &writer),
+    }
+}
+
+/// Export results as JSON
+fn exportJson(
+    allocator: std.mem.Allocator,
+    result: *const DedupeResult,
+    export_writer: *export_mod.ExportWriter,
+) !void {
+    var json_writer = export_mod.JsonWriter.init(&export_writer.buffer, allocator);
+
+    try json_writer.writeObjectStart();
+
+    try json_writer.writeKeyNumber("total_files_scanned", result.total_files_scanned);
+    try json_writer.writeComma();
+    try json_writer.writeKeyNumber("total_duplicates", result.total_duplicates);
+    try json_writer.writeComma();
+    try json_writer.writeKeyNumber("total_space_savings", result.total_space_savings);
+    try json_writer.writeComma();
+    try json_writer.writeKeyNumber("duplicate_group_count", result.duplicate_groups.len);
+    try json_writer.writeComma();
+
+    try json_writer.writeKey("duplicate_groups");
+    try json_writer.writeArrayStart();
+
+    for (result.duplicate_groups, 0..) |group, i| {
+        if (i > 0) try json_writer.writeComma();
+
+        try json_writer.writeObjectStart();
+        try json_writer.writeKeyNumber("file_count", group.files.items.len);
+        try json_writer.writeComma();
+        try json_writer.writeKeyNumber("file_size", group.files.items[0].size);
+        try json_writer.writeComma();
+        try json_writer.writeKeyNumber("total_savings", group.files.items[0].size * (group.files.items.len - 1));
+        try json_writer.writeComma();
+
+        try json_writer.writeKey("files");
+        try json_writer.writeArrayStart();
+
+        for (group.files.items, 0..) |file, j| {
+            if (j > 0) try json_writer.writeComma();
+
+            try json_writer.writeObjectStart();
+            try json_writer.writeKeyValue("path", file.path);
+            try json_writer.writeComma();
+            try json_writer.writeKeyNumber("size", file.size);
+            try json_writer.writeComma();
+            try json_writer.writeKeyNumber("modified_time", file.modified_time);
+            try json_writer.writeObjectEnd();
+        }
+
+        try json_writer.writeArrayEnd();
+        try json_writer.writeObjectEnd();
+    }
+
+    try json_writer.writeArrayEnd();
+    try json_writer.writeObjectEnd();
+
+    try export_writer.write(export_writer.buffer.items);
+}
+
+/// Export results as CSV
+fn exportCsv(
+    allocator: std.mem.Allocator,
+    result: *const DedupeResult,
+    export_writer: *export_mod.ExportWriter,
+) !void {
+    var csv_writer = export_mod.CsvWriter.init(&export_writer.buffer, allocator);
+
+    // Write header
+    const headers = [_][]const u8{ "Group", "File_Path", "Size_Bytes", "Modified_Time", "Is_Duplicate" };
+    try csv_writer.writeHeader(&headers);
+
+    // Write data rows
+    for (result.duplicate_groups, 0..) |group, group_idx| {
+        for (group.files.items, 0..) |file, file_idx| {
+            var group_buf: [32]u8 = undefined;
+            const group_str = try std.fmt.bufPrint(&group_buf, "{d}", .{group_idx + 1});
+            try csv_writer.writeField(group_str);
+
+            try csv_writer.writeField(file.path);
+            try csv_writer.writeFieldNumber(file.size);
+            try csv_writer.writeFieldNumber(file.modified_time);
+
+            // First file is the original, rest are duplicates
+            try csv_writer.writeField(if (file_idx == 0) "false" else "true");
+
+            try csv_writer.writeRow();
+        }
+    }
+
+    try export_writer.write(export_writer.buffer.items);
+}
+
 // ============================================================================
 // Command Interface Implementation
 // ============================================================================
@@ -573,6 +687,20 @@ fn dedupeExecute(allocator: std.mem.Allocator, args: []const []const u8, config:
                 return error.InvalidArgument;
             }
             options.min_size = try std.fmt.parseInt(u64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("--format requires a value (json or csv)");
+                return error.InvalidArgument;
+            }
+            options.export_format = try export_mod.ExportFormat.fromString(args[i]);
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("--output requires a file path");
+                return error.InvalidArgument;
+            }
+            options.export_path = args[i];
         } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
         } else if (arg[0] != '-') {
@@ -592,8 +720,19 @@ fn dedupeExecute(allocator: std.mem.Allocator, args: []const []const u8, config:
     var result = try scanForDuplicates(allocator, dir_path, options);
     defer result.deinit();
 
-    // Display results
-    try printDuplicateGroups(&result, options);
+    // Display results (unless exporting to file)
+    if (options.export_format == null or options.export_path == null) {
+        try printDuplicateGroups(&result, options);
+    }
+
+    // Export results if requested
+    if (options.export_format) |format| {
+        try exportDedupeResults(allocator, &result, format, options.export_path);
+        if (options.export_path) |path| {
+            printSuccess("Results exported to:");
+            print(" {s}\n", .{path});
+        }
+    }
 
     // Apply hardlinks if requested
     if (options.use_hardlinks and result.duplicate_groups.len > 0) {
