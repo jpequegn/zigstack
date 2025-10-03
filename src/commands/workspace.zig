@@ -19,6 +19,7 @@ const workspace_help_text =
     \\
     \\Commands:
     \\  scan        Scan directory for projects and generate report
+    \\  cleanup     Clean up build artifacts and dependencies from projects
     \\
     \\Arguments:
     \\  <directory>       Directory path to scan (usually ~/Code or ~/Projects)
@@ -29,10 +30,20 @@ const workspace_help_text =
     \\  -V, --verbose           Enable verbose logging
     \\  --json                  Output results as JSON
     \\
+    \\Cleanup Options:
+    \\  -d, --dry-run           Show what would be cleaned without deleting
+    \\  --strategy LEVEL        Cleanup strategy: conservative, moderate, aggressive (default: conservative)
+    \\  --project-type TYPE     Only clean projects of specific type (nodejs, python, rust, zig, go, java)
+    \\  --inactive-only         Only clean inactive projects
+    \\  --artifacts-only        Only remove build artifacts (preserve dependencies)
+    \\  --deps-only             Only remove dependencies (preserve build artifacts)
+    \\
     \\Examples:
     \\  zigstack workspace scan ~/Code
     \\  zigstack workspace scan --inactive-days 90 ~/Projects
-    \\  zigstack workspace scan --verbose ~/Code
+    \\  zigstack workspace cleanup --dry-run ~/Code
+    \\  zigstack workspace cleanup --strategy moderate --inactive-only ~/Code
+    \\  zigstack workspace cleanup --project-type nodejs --artifacts-only ~/Code
     \\
 ;
 
@@ -99,6 +110,59 @@ pub const WorkspaceStats = struct {
         self.size_by_type.deinit();
         self.inactive_by_type.deinit();
     }
+};
+
+/// Cleanup strategy levels
+pub const CleanupStrategy = enum {
+    conservative, // Only build artifacts in inactive projects
+    moderate, // Build artifacts + dependencies in inactive projects
+    aggressive, // Build artifacts + dependencies in all projects
+
+    pub fn fromString(str: []const u8) ?CleanupStrategy {
+        if (std.mem.eql(u8, str, "conservative")) return .conservative;
+        if (std.mem.eql(u8, str, "moderate")) return .moderate;
+        if (std.mem.eql(u8, str, "aggressive")) return .aggressive;
+        return null;
+    }
+
+    pub fn toString(self: CleanupStrategy) []const u8 {
+        return switch (self) {
+            .conservative => "conservative",
+            .moderate => "moderate",
+            .aggressive => "aggressive",
+        };
+    }
+};
+
+/// Cleanup configuration
+pub const CleanupConfig = struct {
+    dry_run: bool = false,
+    strategy: CleanupStrategy = .conservative,
+    project_type_filter: ?ProjectType = null,
+    inactive_only: bool = false,
+    artifacts_only: bool = false,
+    deps_only: bool = false,
+    verbose: bool = false,
+};
+
+/// Cleanup result for a single project
+pub const CleanupResult = struct {
+    project_name: []const u8,
+    project_type: ProjectType,
+    artifacts_removed: u64 = 0,
+    deps_removed: u64 = 0,
+    total_removed: u64 = 0,
+    error_message: ?[]const u8 = null,
+};
+
+/// Aggregate cleanup statistics
+pub const CleanupStats = struct {
+    projects_cleaned: usize = 0,
+    projects_skipped: usize = 0,
+    projects_failed: usize = 0,
+    total_artifacts_removed: u64 = 0,
+    total_deps_removed: u64 = 0,
+    total_space_freed: u64 = 0,
 };
 
 /// Detect project type based on files in directory
@@ -427,6 +491,366 @@ fn printReport(stats: *const WorkspaceStats, projects: []const ProjectInfo, work
     print("\n============================================================\n", .{});
 }
 
+/// Delete directory recursively
+fn deleteDirectory(dir_path: []const u8) !void {
+    std.fs.cwd().deleteTree(dir_path) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+}
+
+/// Get paths to clean based on project type and config
+fn getCleanupPaths(
+    allocator: std.mem.Allocator,
+    project_type: ProjectType,
+    config: *const CleanupConfig,
+) !struct { deps: []const []const u8, artifacts: []const []const u8 } {
+    const deps_paths: []const []const u8 = if (!config.artifacts_only) switch (project_type) {
+        .nodejs => &[_][]const u8{"node_modules"},
+        .python => &[_][]const u8{ "venv", ".venv", "__pycache__" },
+        .rust => &[_][]const u8{"target"},
+        .zig => &[_][]const u8{ "zig-cache", "zig-out" },
+        .go_lang => &[_][]const u8{"vendor"},
+        .java => &[_][]const u8{ "target", "build", ".gradle" },
+        .unknown => &[_][]const u8{},
+    } else &[_][]const u8{};
+
+    const build_paths: []const []const u8 = if (!config.deps_only) switch (project_type) {
+        .nodejs => &[_][]const u8{ "dist", "build", ".next", ".nuxt" },
+        .python => &[_][]const u8{"dist"},
+        .rust => &[_][]const u8{},
+        .zig => &[_][]const u8{},
+        .go_lang => &[_][]const u8{},
+        .java => &[_][]const u8{},
+        .unknown => &[_][]const u8{},
+    } else &[_][]const u8{};
+
+    _ = allocator;
+    return .{ .deps = deps_paths, .artifacts = build_paths };
+}
+
+/// Clean up a single project
+fn cleanupProject(
+    allocator: std.mem.Allocator,
+    project: *const ProjectInfo,
+    config: *const CleanupConfig,
+) !CleanupResult {
+    var result = CleanupResult{
+        .project_name = project.name,
+        .project_type = project.project_type,
+    };
+
+    const paths = try getCleanupPaths(allocator, project.project_type, config);
+
+    // Calculate sizes before deletion
+    var artifacts_size: u64 = 0;
+    var deps_size: u64 = 0;
+
+    for (paths.artifacts) |artifact_path| {
+        const full_path = try std.fs.path.join(allocator, &[_][]const u8{ project.path, artifact_path });
+        defer allocator.free(full_path);
+
+        const size = try calculateDirSize(allocator, full_path);
+        artifacts_size += size;
+
+        if (!config.dry_run) {
+            deleteDirectory(full_path) catch |err| {
+                const msg = try std.fmt.allocPrint(allocator, "Failed to delete {s}: {}", .{ artifact_path, err });
+                result.error_message = msg;
+                return result;
+            };
+        }
+    }
+
+    for (paths.deps) |dep_path| {
+        const full_path = try std.fs.path.join(allocator, &[_][]const u8{ project.path, dep_path });
+        defer allocator.free(full_path);
+
+        const size = try calculateDirSize(allocator, full_path);
+        deps_size += size;
+
+        if (!config.dry_run) {
+            deleteDirectory(full_path) catch |err| {
+                const msg = try std.fmt.allocPrint(allocator, "Failed to delete {s}: {}", .{ dep_path, err });
+                result.error_message = msg;
+                return result;
+            };
+        }
+    }
+
+    result.artifacts_removed = artifacts_size;
+    result.deps_removed = deps_size;
+    result.total_removed = artifacts_size + deps_size;
+
+    return result;
+}
+
+/// Check if project should be cleaned based on config
+fn shouldCleanProject(project: *const ProjectInfo, config: *const CleanupConfig) bool {
+    // Filter by project type
+    if (config.project_type_filter) |filter_type| {
+        if (project.project_type != filter_type) return false;
+    }
+
+    // Filter by inactive status based on strategy
+    switch (config.strategy) {
+        .conservative => {
+            if (!project.is_inactive) return false;
+        },
+        .moderate => {
+            if (!project.is_inactive) return false;
+        },
+        .aggressive => {
+            // Clean all projects
+        },
+    }
+
+    // Additional inactive-only filter
+    if (config.inactive_only and !project.is_inactive) {
+        return false;
+    }
+
+    return true;
+}
+
+/// Execute cleanup on workspace
+fn performCleanup(
+    allocator: std.mem.Allocator,
+    projects: []const ProjectInfo,
+    config: *const CleanupConfig,
+) !struct { results: std.ArrayListUnmanaged(CleanupResult), stats: CleanupStats } {
+    var results = std.ArrayListUnmanaged(CleanupResult){};
+    errdefer {
+        for (results.items) |*r| {
+            if (r.error_message) |msg| allocator.free(msg);
+        }
+        results.deinit(allocator);
+    }
+
+    var stats = CleanupStats{};
+
+    for (projects) |*project| {
+        if (!shouldCleanProject(project, config)) {
+            stats.projects_skipped += 1;
+            continue;
+        }
+
+        const result = cleanupProject(allocator, project, config) catch |err| {
+            stats.projects_failed += 1;
+            const msg = try std.fmt.allocPrint(allocator, "Cleanup error: {}", .{err});
+            try results.append(allocator, .{
+                .project_name = project.name,
+                .project_type = project.project_type,
+                .error_message = msg,
+            });
+            continue;
+        };
+
+        if (result.error_message != null) {
+            stats.projects_failed += 1;
+        } else {
+            stats.projects_cleaned += 1;
+            stats.total_artifacts_removed += result.artifacts_removed;
+            stats.total_deps_removed += result.deps_removed;
+            stats.total_space_freed += result.total_removed;
+        }
+
+        try results.append(allocator, result);
+    }
+
+    return .{ .results = results, .stats = stats };
+}
+
+/// Print cleanup report
+fn printCleanupReport(
+    config: *const CleanupConfig,
+    stats: *const CleanupStats,
+    results: []const CleanupResult,
+) !void {
+    var buf: [64]u8 = undefined;
+
+    print("\n", .{});
+    print("============================================================\n", .{});
+    if (config.dry_run) {
+        print("CLEANUP PREVIEW (DRY RUN)\n", .{});
+    } else {
+        print("CLEANUP COMPLETE\n", .{});
+    }
+    print("============================================================\n\n", .{});
+
+    print("Strategy: {s}\n", .{config.strategy.toString()});
+    if (config.project_type_filter) |ptype| {
+        print("Filter: {s} projects only\n", .{ptype.toString()});
+    }
+    if (config.inactive_only) {
+        print("Mode: Inactive projects only\n", .{});
+    }
+    if (config.artifacts_only) {
+        print("Scope: Build artifacts only\n", .{});
+    } else if (config.deps_only) {
+        print("Scope: Dependencies only\n", .{});
+    }
+    print("\n", .{});
+
+    print("Summary:\n", .{});
+    print("----------------------------------------\n", .{});
+    print("  Projects cleaned:   {d}\n", .{stats.projects_cleaned});
+    print("  Projects skipped:   {d}\n", .{stats.projects_skipped});
+    print("  Projects failed:    {d}\n\n", .{stats.projects_failed});
+
+    print("Space Freed:\n", .{});
+    print("----------------------------------------\n", .{});
+    print("  Build artifacts:    {s}\n", .{try formatSize(stats.total_artifacts_removed, &buf)});
+    print("  Dependencies:       {s}\n", .{try formatSize(stats.total_deps_removed, &buf)});
+    print("  Total:              {s}\n\n", .{try formatSize(stats.total_space_freed, &buf)});
+
+    // Show detailed results if verbose or if there were failures
+    if (config.verbose or stats.projects_failed > 0) {
+        print("Detailed Results:\n", .{});
+        print("----------------------------------------\n", .{});
+        for (results) |*result| {
+            if (result.error_message) |msg| {
+                print("  ❌ {s} ({s}): {s}\n", .{
+                    result.project_name,
+                    result.project_type.toString(),
+                    msg,
+                });
+            } else if (config.verbose and result.total_removed > 0) {
+                const size_str = try formatSize(result.total_removed, &buf);
+                print("  ✓ {s} ({s}): {s}\n", .{
+                    result.project_name,
+                    result.project_type.toString(),
+                    size_str,
+                });
+            }
+        }
+        print("\n", .{});
+    }
+
+    print("============================================================\n", .{});
+
+    if (config.dry_run and stats.total_space_freed > 0) {
+        print("\nTo perform actual cleanup, run without --dry-run flag\n", .{});
+    }
+}
+
+/// Execute cleanup command
+fn executeCleanup(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var config = CleanupConfig{};
+    var inactive_days: u32 = 180;
+    var workspace_path: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            print("{s}", .{workspace_help_text});
+            return;
+        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--dry-run")) {
+            config.dry_run = true;
+        } else if (std.mem.eql(u8, arg, "--strategy")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value for --strategy");
+                return error.MissingArgument;
+            }
+            config.strategy = CleanupStrategy.fromString(args[i]) orelse {
+                printError("Invalid strategy. Use: conservative, moderate, or aggressive");
+                return error.InvalidStrategy;
+            };
+        } else if (std.mem.eql(u8, arg, "--project-type")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value for --project-type");
+                return error.MissingArgument;
+            }
+            const type_str = args[i];
+            if (std.mem.eql(u8, type_str, "nodejs")) {
+                config.project_type_filter = .nodejs;
+            } else if (std.mem.eql(u8, type_str, "python")) {
+                config.project_type_filter = .python;
+            } else if (std.mem.eql(u8, type_str, "rust")) {
+                config.project_type_filter = .rust;
+            } else if (std.mem.eql(u8, type_str, "zig")) {
+                config.project_type_filter = .zig;
+            } else if (std.mem.eql(u8, type_str, "go")) {
+                config.project_type_filter = .go_lang;
+            } else if (std.mem.eql(u8, type_str, "java")) {
+                config.project_type_filter = .java;
+            } else {
+                printError("Invalid project type. Use: nodejs, python, rust, zig, go, or java");
+                return error.InvalidProjectType;
+            }
+        } else if (std.mem.eql(u8, arg, "--inactive-only")) {
+            config.inactive_only = true;
+        } else if (std.mem.eql(u8, arg, "--artifacts-only")) {
+            config.artifacts_only = true;
+        } else if (std.mem.eql(u8, arg, "--deps-only")) {
+            config.deps_only = true;
+        } else if (std.mem.eql(u8, arg, "--inactive-days")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value for --inactive-days");
+                return error.MissingArgument;
+            }
+            inactive_days = try std.fmt.parseInt(u32, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
+            config.verbose = true;
+        } else if (arg[0] != '-') {
+            if (workspace_path != null) {
+                printError("Multiple workspace paths specified");
+                return error.TooManyArguments;
+            }
+            workspace_path = arg;
+        }
+    }
+
+    if (config.artifacts_only and config.deps_only) {
+        printError("Cannot specify both --artifacts-only and --deps-only");
+        return error.ConflictingOptions;
+    }
+
+    if (workspace_path == null) {
+        printError("Missing required workspace path argument");
+        print("\n{s}", .{workspace_help_text});
+        return error.MissingWorkspacePath;
+    }
+
+    try validateDirectory(workspace_path.?);
+
+    if (config.verbose) {
+        printInfo("Scanning workspace for cleanup...");
+        print("Path: {s}\n", .{workspace_path.?});
+        print("Strategy: {s}\n", .{config.strategy.toString()});
+        if (config.dry_run) {
+            print("Mode: DRY RUN (no actual deletion)\n", .{});
+        }
+        print("\n", .{});
+    }
+
+    // Scan workspace to get project list
+    var projects = try scanWorkspace(allocator, workspace_path.?, inactive_days);
+    defer {
+        for (projects.items) |*proj| {
+            allocator.free(proj.name);
+            allocator.free(proj.path);
+        }
+        projects.deinit(allocator);
+    }
+
+    // Perform cleanup
+    var cleanup_data = try performCleanup(allocator, projects.items, &config);
+    defer {
+        for (cleanup_data.results.items) |*r| {
+            if (r.error_message) |msg| allocator.free(msg);
+        }
+        cleanup_data.results.deinit(allocator);
+    }
+
+    // Print report
+    try printCleanupReport(&config, &cleanup_data.stats, cleanup_data.results.items);
+}
+
 /// Execute workspace scan command
 fn executeScan(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var inactive_days: u32 = 180;
@@ -505,6 +929,8 @@ fn executeWorkspace(allocator: std.mem.Allocator, args: []const []const u8, _: *
 
     if (std.mem.eql(u8, subcommand, "scan")) {
         try executeScan(allocator, args[1..]);
+    } else if (std.mem.eql(u8, subcommand, "cleanup")) {
+        try executeCleanup(allocator, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "-h") or std.mem.eql(u8, subcommand, "--help")) {
         print("{s}", .{workspace_help_text});
     } else {
