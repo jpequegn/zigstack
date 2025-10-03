@@ -1170,6 +1170,7 @@ test {
     _ = @import("commands/watch_test.zig");
     _ = @import("commands/watch_rules_test.zig");
     _ = @import("commands/workspace_test.zig");
+    _ = @import("commands/workspace_cleanup_test.zig");
     _ = @import("core/utils_test.zig");
     _ = @import("core/export.zig");
 }
