@@ -11,6 +11,7 @@ const command_mod = @import("command.zig");
 
 // Import organize command for applying organization
 const organize_cmd = @import("organize.zig");
+const watch_rules = @import("watch_rules.zig");
 
 // Type exports
 pub const Config = config_mod.Config;
@@ -35,6 +36,8 @@ const watch_help_text =
     \\
     \\Options:
     \\  -h, --help              Display this help message
+    \\  --rules <FILE>          JSON rules file for advanced organization
+    \\  --validate-rules        Validate rules file and exit
     \\  --interval <SECONDS>    Check interval in seconds (default: 5)
     \\  --log <FILE>            Log file path (default: ~/.local/share/zigstack/watch.log)
     \\  --pid <FILE>            PID file path (default: ~/.local/share/zigstack/watch.pid)
@@ -47,6 +50,8 @@ const watch_help_text =
     \\
     \\Examples:
     \\  zigstack watch ~/Downloads
+    \\  zigstack watch --rules watch-rules.json ~/Downloads
+    \\  zigstack watch --validate-rules --rules watch-rules.json
     \\  zigstack watch --interval 10 --verbose ~/Downloads
     \\  zigstack watch --by-date --date-format year-month ~/Documents
     \\
@@ -57,6 +62,8 @@ pub const WatchConfig = struct {
     interval_seconds: u64 = 5,
     log_file_path: ?[]const u8 = null,
     pid_file_path: ?[]const u8 = null,
+    rules_file_path: ?[]const u8 = null,
+    validate_rules_only: bool = false,
     daemon: bool = false,
     verbose: bool = false,
 };
@@ -272,6 +279,15 @@ fn executeWatch(allocator: std.mem.Allocator, args: []const []const u8, org_conf
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             print("{s}", .{watch_help_text});
             return;
+        } else if (std.mem.eql(u8, arg, "--rules")) {
+            i += 1;
+            if (i >= args.len) {
+                printError("Missing value for --rules");
+                return error.MissingArgument;
+            }
+            watch_config.rules_file_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--validate-rules")) {
+            watch_config.validate_rules_only = true;
         } else if (std.mem.eql(u8, arg, "--interval")) {
             i += 1;
             if (i >= args.len) {
@@ -342,6 +358,56 @@ fn executeWatch(allocator: std.mem.Allocator, args: []const []const u8, org_conf
     }
 
     try validateDirectory(dir_path.?);
+
+    // Load rules if provided
+    var rule_engine: ?watch_rules.RuleEngine = null;
+    defer if (rule_engine) |*engine| engine.deinit();
+
+    if (watch_config.rules_file_path) |rules_path| {
+        rule_engine = watch_rules.loadRulesFromFile(allocator, rules_path) catch |err| {
+            const err_msg = try std.fmt.allocPrint(allocator, "Failed to load rules file: {s}", .{@errorName(err)});
+            defer allocator.free(err_msg);
+            printError(err_msg);
+            return err;
+        };
+
+        printInfo("Rules loaded successfully");
+        print("Loaded {d} rules from: {s}\n", .{ rule_engine.?.rules.items.len, rules_path });
+
+        // Validate rules
+        const validation_result = try rule_engine.?.validateRules();
+        defer allocator.free(validation_result);
+
+        if (validation_result.len > 0) {
+            printWarning("Rule validation issues:");
+            print("{s}\n", .{validation_result});
+
+            if (watch_config.validate_rules_only) {
+                return error.RuleValidationFailed;
+            }
+        } else {
+            printSuccess("All rules validated successfully");
+        }
+
+        // If only validating, exit now
+        if (watch_config.validate_rules_only) {
+            printSuccess("Rule validation completed");
+            return;
+        }
+
+        // Display loaded rules
+        if (watch_config.verbose) {
+            print("\nLoaded rules:\n", .{});
+            for (rule_engine.?.rules.items) |*rule| {
+                print("  - {s} (priority: {d}, trigger: {s})\n", .{
+                    rule.name,
+                    rule.priority,
+                    rule.trigger.toString(),
+                });
+            }
+            print("\n", .{});
+        }
+    }
 
     // Set default paths if not provided
     const home = std.posix.getenv("HOME") orelse ".";
@@ -419,27 +485,57 @@ fn executeWatch(allocator: std.mem.Allocator, args: []const []const u8, org_conf
         if (new_files.items.len > 0) {
             try state.log("Processing {d} new files", .{new_files.items.len}, watch_config.verbose);
 
-            // Apply organization to directory
-            // Note: This will organize ALL files, not just new ones
-            // A more sophisticated implementation would organize only new files
-            org_config.create_directories = true;
-            org_config.move_files = true;
+            // If using rules, process through rule engine
+            if (rule_engine) |*engine| {
+                var action_context = watch_rules.ActionContext.init(allocator);
+                defer action_context.deinit();
 
-            const organize_args = &[_][]const u8{dir_path.?};
-            organize_cmd.executeOrganizeCommand(allocator, organize_args, org_config) catch |err| {
-                errors += 1;
-                const err_msg = try std.fmt.allocPrint(
-                    allocator,
-                    "Error organizing files: {s}",
-                    .{@errorName(err)},
-                );
-                defer allocator.free(err_msg);
-                try state.log("{s}", .{err_msg}, watch_config.verbose);
-                continue;
-            };
+                for (new_files.items) |file_path| {
+                    // Get file info
+                    const file_state = state.files.get(file_path) orelse continue;
 
-            files_processed += new_files.items.len;
-            try state.log("Organized {d} files successfully", .{new_files.items.len}, watch_config.verbose);
+                    // Process through rule engine
+                    const matched = try engine.processFile(
+                        file_path,
+                        file_state.size,
+                        file_state.mtime,
+                        .file_created,
+                        &action_context,
+                    );
+
+                    if (matched > 0) {
+                        try state.log("File {s} matched {d} rules", .{ file_path, matched }, watch_config.verbose);
+                    }
+                }
+
+                // Execute queued actions
+                if (action_context.organize_queue.items.len > 0) {
+                    try state.log("Organizing {d} files from rules", .{action_context.organize_queue.items.len}, watch_config.verbose);
+                    // TODO: Execute organize actions
+                }
+
+                files_processed += new_files.items.len;
+            } else {
+                // Default organization without rules
+                org_config.create_directories = true;
+                org_config.move_files = true;
+
+                const organize_args = &[_][]const u8{dir_path.?};
+                organize_cmd.executeOrganizeCommand(allocator, organize_args, org_config) catch |err| {
+                    errors += 1;
+                    const err_msg = try std.fmt.allocPrint(
+                        allocator,
+                        "Error organizing files: {s}",
+                        .{@errorName(err)},
+                    );
+                    defer allocator.free(err_msg);
+                    try state.log("{s}", .{err_msg}, watch_config.verbose);
+                    continue;
+                };
+
+                files_processed += new_files.items.len;
+                try state.log("Organized {d} files successfully", .{new_files.items.len}, watch_config.verbose);
+            }
         }
     }
 

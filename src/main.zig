@@ -1166,6 +1166,7 @@ test {
     _ = @import("commands/command_test.zig");
     _ = @import("commands/backward_compat_test.zig");
     _ = @import("commands/watch_test.zig");
+    _ = @import("commands/watch_rules_test.zig");
     _ = @import("core/utils_test.zig");
     _ = @import("core/export.zig");
 }

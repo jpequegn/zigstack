@@ -1,0 +1,65 @@
+{
+  "rules": [
+    {
+      "name": "Organize PDFs",
+      "trigger": "file_created",
+      "match": {
+        "extension": ".pdf"
+      },
+      "actions": [
+        {
+          "organize": {
+            "by_category": true
+          }
+        },
+        {
+          "log": {
+            "message": "PDF file organized"
+          }
+        }
+      ],
+      "priority": 80
+    },
+    {
+      "name": "Organize Images",
+      "trigger": "file_created",
+      "match": {
+        "pattern": "*.{jpg,png,gif}"
+      },
+      "actions": [
+        {
+          "organize": {
+            "by_category": true,
+            "by_date": true
+          }
+        }
+      ],
+      "priority": 75
+    },
+    {
+      "name": "Organize Videos",
+      "trigger": "file_created",
+      "match": {
+        "pattern": "*.{mp4,avi,mkv}"
+      },
+      "conditions": [
+        {
+          "size_gt": "10MB"
+        }
+      ],
+      "actions": [
+        {
+          "organize": {
+            "by_category": true
+          }
+        },
+        {
+          "log": {
+            "message": "Large video file organized"
+          }
+        }
+      ],
+      "priority": 70
+    }
+  ]
+}

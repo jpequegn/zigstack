@@ -1,0 +1,101 @@
+{
+  "rules": [
+    {
+      "name": "Organize Work Documents During Business Hours",
+      "trigger": "file_created",
+      "match": {
+        "pattern": "*.pdf",
+        "path_contains": "work"
+      },
+      "conditions": [
+        {
+          "size_gt": "100KB"
+        },
+        {
+          "time_of_day": "09:00-17:00"
+        }
+      ],
+      "actions": [
+        {
+          "organize": {
+            "by_category": true,
+            "by_date": true
+          }
+        },
+        {
+          "log": {
+            "message": "Work document organized during business hours"
+          }
+        }
+      ],
+      "priority": 100
+    },
+    {
+      "name": "Archive Old Downloads",
+      "trigger": "periodic",
+      "match": {
+        "path_contains": "Downloads"
+      },
+      "conditions": [
+        {
+          "age_gt": 2592000
+        }
+      ],
+      "actions": [
+        {
+          "move": {
+            "destination": "~/Archive/old-downloads"
+          }
+        },
+        {
+          "log": {
+            "message": "Old file archived from Downloads"
+          }
+        }
+      ],
+      "priority": 50
+    },
+    {
+      "name": "Organize Large Media Files",
+      "trigger": "file_created",
+      "match": {
+        "pattern": "*.{mp4,avi,mkv,mov}"
+      },
+      "conditions": [
+        {
+          "size_gt": "100MB"
+        }
+      ],
+      "actions": [
+        {
+          "organize": {
+            "by_category": true
+          }
+        },
+        {
+          "log": {
+            "message": "Large media file organized"
+          }
+        }
+      ],
+      "priority": 80
+    },
+    {
+      "name": "Small Files Quick Organize",
+      "trigger": "file_created",
+      "conditions": [
+        {
+          "size_lt": "1MB"
+        }
+      ],
+      "actions": [
+        {
+          "organize": {
+            "by_category": true
+          }
+        }
+      ],
+      "priority": 30
+    }
+  ]
+}
