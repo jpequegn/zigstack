@@ -2,6 +2,36 @@ const std = @import("std");
 const testing = std.testing;
 const archive = @import("archive.zig");
 
+test "CompressionFormat fromString - none" {
+    const format = archive.CompressionFormat.fromString("none");
+    try testing.expectEqual(archive.CompressionFormat.none, format.?);
+}
+
+test "CompressionFormat fromString - tar.gz" {
+    const format = archive.CompressionFormat.fromString("tar.gz");
+    try testing.expectEqual(archive.CompressionFormat.targz, format.?);
+}
+
+test "CompressionFormat fromString - targz" {
+    const format = archive.CompressionFormat.fromString("targz");
+    try testing.expectEqual(archive.CompressionFormat.targz, format.?);
+}
+
+test "CompressionFormat fromString - invalid" {
+    const format = archive.CompressionFormat.fromString("invalid");
+    try testing.expectEqual(@as(?archive.CompressionFormat, null), format);
+}
+
+test "CompressionFormat toString" {
+    try testing.expectEqualStrings("none", archive.CompressionFormat.none.toString());
+    try testing.expectEqualStrings("tar.gz", archive.CompressionFormat.targz.toString());
+}
+
+test "CompressionFormat extension" {
+    try testing.expectEqualStrings("", archive.CompressionFormat.none.extension());
+    try testing.expectEqualStrings(".tar.gz", archive.CompressionFormat.targz.extension());
+}
+
 test "Duration parsing - days" {
     const duration = try archive.Duration.parse("7d");
     try testing.expectEqual(@as(i64, 7 * 24 * 60 * 60), duration.seconds);
@@ -191,6 +221,57 @@ test "integration - archive config defaults" {
     try testing.expect(!config.move_files);
     try testing.expect(config.categories == null);
     try testing.expect(config.min_size_mb == null);
-    try testing.expect(config.dry_run);
+    try testing.expect(!config.dry_run);
     try testing.expect(!config.verbose);
+    try testing.expectEqual(archive.CompressionFormat.none, config.compress);
+    try testing.expectEqual(@as(u8, 6), config.compression_level);
+    try testing.expectEqual(@as(?[]const u8, null), config.archive_name);
+}
+
+test "ArchiveStats compression ratio" {
+    const allocator = testing.allocator;
+    var stats = archive.ArchiveStats.init(allocator);
+    defer stats.deinit();
+
+    stats.archived_size = 1000;
+    stats.compressed_size = 600;
+
+    const ratio = stats.compressionRatio();
+    try testing.expectEqual(@as(f64, 0.6), ratio);
+}
+
+test "ArchiveStats compression savings" {
+    const allocator = testing.allocator;
+    var stats = archive.ArchiveStats.init(allocator);
+    defer stats.deinit();
+
+    stats.archived_size = 1000;
+    stats.compressed_size = 600;
+
+    const savings = stats.compressionSavings();
+    try testing.expectEqual(@as(f64, 40.0), savings);
+}
+
+test "ArchiveStats compression ratio - zero size" {
+    const allocator = testing.allocator;
+    var stats = archive.ArchiveStats.init(allocator);
+    defer stats.deinit();
+
+    stats.archived_size = 0;
+    stats.compressed_size = 0;
+
+    const ratio = stats.compressionRatio();
+    try testing.expectEqual(@as(f64, 0.0), ratio);
+}
+
+test "ArchiveStats compression savings - zero size" {
+    const allocator = testing.allocator;
+    var stats = archive.ArchiveStats.init(allocator);
+    defer stats.deinit();
+
+    stats.archived_size = 0;
+    stats.compressed_size = 0;
+
+    const savings = stats.compressionSavings();
+    try testing.expectEqual(@as(f64, 0.0), savings);
 }
