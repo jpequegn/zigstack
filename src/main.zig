@@ -15,6 +15,7 @@ const organize_cmd = @import("commands/organize.zig");
 const analyze_cmd = @import("commands/analyze.zig");
 const dedupe_cmd = @import("commands/dedupe.zig");
 const archive_cmd = @import("commands/archive.zig");
+const watch_cmd = @import("commands/watch.zig");
 
 // Re-export types for use in main
 const FileInfo = file_info_mod.FileInfo;
@@ -151,6 +152,7 @@ pub fn main() !void {
     try registry.register(analyze_cmd.getCommand());
     try registry.register(dedupe_cmd.getCommand());
     try registry.register(archive_cmd.getCommand());
+    try registry.register(watch_cmd.getCommand());
 
     // Parse for command
     const parse_result = try CommandParser.parse(allocator, args[1..]);
@@ -1163,6 +1165,7 @@ test "calculateFileHash with different content" {
 test {
     _ = @import("commands/command_test.zig");
     _ = @import("commands/backward_compat_test.zig");
+    _ = @import("commands/watch_test.zig");
     _ = @import("core/utils_test.zig");
     _ = @import("core/export.zig");
 }
