@@ -37,7 +37,7 @@ const Command = command_mod.Command;
 const CommandRegistry = command_mod.CommandRegistry;
 const CommandParser = command_mod.CommandParser;
 
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 const PROGRAM_NAME = "zigstack";
 
 const usage_text =
