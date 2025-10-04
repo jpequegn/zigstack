@@ -67,4 +67,24 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     const integration_test_step = b.step("test-integration", "Run integration tests only");
     integration_test_step.dependOn(&run_integration_tests.step);
+
+    // ====== Benchmarking Infrastructure ======
+
+    // Benchmark executable with ReleaseFast optimization
+    const benchmark_exe = b.addExecutable(.{
+        .name = "zigstack-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = target,
+            .optimize = .ReleaseFast, // Force optimized builds for benchmarks
+        }),
+    });
+
+    const run_benchmark = b.addRunArtifact(benchmark_exe);
+    const benchmark_step = b.step("benchmark", "Run performance benchmarks");
+    benchmark_step.dependOn(&run_benchmark.step);
+
+    if (b.args) |args| {
+        run_benchmark.addArgs(args);
+    }
 }
