@@ -4,16 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ZigStack is a file organization CLI tool written in Zig. It categorizes files by extension, provides organization previews, and can actually organize files with advanced options including date-based organization, size-based separation, duplicate detection, and recursive processing.
+ZigStack is a comprehensive file management CLI tool written in Zig. It provides six powerful commands for organizing, analyzing, and managing files:
+
+- **organize**: Categorize files by extension, date, size, or duplicates
+- **analyze**: Disk usage analysis with visualization and content metadata
+- **dedupe**: Find and manage duplicate files with interactive or automatic resolution
+- **archive**: Archive old files based on age with optional compression
+- **watch**: Monitor directories and auto-organize new files with custom rules
+- **workspace**: Manage developer workspaces and clean build artifacts
+
+The tool emphasizes safety (dry-run by default), performance (>1000 files/sec), and flexibility (extensive configuration options).
 
 ## Core Architecture
 
-### Modular Architecture (Phase 1)
-- **Entry Point**: `src/main.zig` - Main application entry and CLI
+### Modular Architecture (v0.3.0)
+- **Entry Point**: `src/main.zig` - Main application entry, command routing, and CLI
 - **Core Modules**: `src/core/` - File info, config, organization, tracking, utilities
-- **Commands**: `src/commands/` - Command system with organize, future commands
+- **Commands**: `src/commands/` - Six command implementations (organize, analyze, dedupe, archive, watch, workspace)
+  - `organize.zig` - File categorization and organization
+  - `analyze.zig` - Disk usage analysis and reporting
+  - `dedupe.zig` - Duplicate file detection and management
+  - `archive.zig` - Age-based file archiving
+  - `watch.zig` - Directory monitoring with rules engine
+  - `workspace.zig` - Developer workspace management
+  - `command.zig` - Command registry and dispatch system
+  - `watch_rules.zig` - Rules engine for watch command
 - **Test Helpers**: `src/test_helpers.zig` - Reusable test utilities and scenarios
-- **Build Configuration**: `build.zig` - Multi-target build with separate test runners
+- **Build Configuration**: `build.zig` - Multi-target build with separate test runners (test, test-unit, test-integration)
+- **Documentation**: `docs/` - Comprehensive documentation including guides, command references, FAQ, and troubleshooting
 
 ### Key Data Structures
 
@@ -132,9 +150,21 @@ zig build run -- --by-date --by-size --detect-dups --recursive --verbose --move 
 ## CLI Interface
 
 ### Basic Usage
-`zigstack [OPTIONS] <directory>`
+```bash
+zigstack <command> [OPTIONS] <directory>
+# or (backward compatible with v0.2.0)
+zigstack [OPTIONS] <directory>  # Implies 'organize' command
+```
 
-### Key Options
+### Available Commands
+1. **organize** - Categorize and organize files (default command)
+2. **analyze** - Disk usage analysis with visualization
+3. **dedupe** - Find and manage duplicate files
+4. **archive** - Archive files older than specified age
+5. **watch** - Monitor directory and auto-organize files
+6. **workspace** - Manage developer workspace projects
+
+### Common Options (Organize Command)
 - `-d/--dry-run`: Preview mode (default)
 - `-m/--move`: Create directories and move files
 - `--by-date --date-format [year|year-month|year-month-day]`: Organize by date
@@ -143,10 +173,12 @@ zig build run -- --by-date --by-size --detect-dups --recursive --verbose --move 
 - `--recursive --max-depth N`: Process subdirectories
 - `-V/--verbose`: Detailed logging
 
-### Operation Modes
-1. **Preview** (default): Shows planned organization without changes
-2. **Create** (`--create`): Creates category directories only
-3. **Move** (`--move`): Full organization with file moving
+### Command-Specific Options
+- **analyze**: `--content`, `--json`, `--top N`, `--min-size MB`
+- **dedupe**: `--auto [keep-oldest|keep-newest|keep-largest]`, `--hardlink`, `--delete`, `--format [json|csv]`
+- **archive**: `--older-than DURATION`, `--dest PATH`, `--compress [tar.gz]`, `--move`
+- **watch**: `--rules FILE`, `--interval SECONDS`, `--daemon`
+- **workspace**: `scan|cleanup`, `--strategy [conservative|moderate|aggressive]`, `--project-type TYPE`
 
 ## Testing Strategy
 
