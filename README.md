@@ -664,9 +664,27 @@ If an error occurs during file moving, zigstack can automatically rollback all c
 # Run all tests
 zig build test
 
+# Run unit tests only
+zig build test-unit
+
+# Run integration tests only
+zig build test-integration
+
 # Run with verbose output
 zig build test --verbose
 ```
+
+### Performance Benchmarking
+
+```bash
+# Run performance benchmarks
+zig build benchmark
+
+# Build with specific optimization level
+zig build -Doptimize=ReleaseFast benchmark
+```
+
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for detailed performance characteristics and benchmarking information.
 
 ### Building in Debug Mode
 
