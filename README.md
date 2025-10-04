@@ -56,17 +56,57 @@ zigstack <command> [OPTIONS] <directory>
 
 ### Command-Based Interface (v0.3.0+)
 
-Starting with v0.3.0, ZigStack supports a command-based interface while maintaining 100% backward compatibility with v0.2.0 usage patterns.
+Starting with v0.3.0, ZigStack supports a rich command-based interface with six powerful commands, while maintaining 100% backward compatibility with v0.2.0 usage patterns.
 
 #### Available Commands
-- `organize` - Organize files by extension, date, size, or duplicates (default command)
+
+| Command | Purpose | Status |
+|---------|---------|--------|
+| `organize` | Organize files by extension, date, size, or duplicates | ✅ Default |
+| `analyze` | Disk usage analysis with detailed breakdowns | ✅ Available |
+| `dedupe` | Find and manage duplicate files | ✅ Available |
+| `archive` | Archive old files based on age | ✅ Available |
+| `watch` | Monitor directory and auto-organize files | ✅ Available |
+| `workspace` | Manage developer workspace projects | ✅ Available |
+
+#### Quick Command Overview
+
+**`organize`** - Smart file organization (default command)
+```bash
+zigstack organize --move /path/to/messy/directory
+```
+
+**`analyze`** - Disk usage analysis
+```bash
+zigstack analyze --top 20 --content /path/to/analyze
+```
+
+**`dedupe`** - Duplicate file management
+```bash
+zigstack dedupe --auto keep-newest --hardlink /downloads
+```
+
+**`archive`** - Age-based archiving
+```bash
+zigstack archive --older-than 6mo --dest ~/Archive /documents
+```
+
+**`watch`** - Automatic file organization
+```bash
+zigstack watch --rules watch-rules.json ~/Downloads
+```
+
+**`workspace`** - Developer workspace cleanup
+```bash
+zigstack workspace cleanup --strategy moderate ~/Code
+```
 
 #### Backward Compatibility
 
 **All v0.2.0 usage patterns continue to work exactly as before:**
 
 ```bash
-# v0.2.0 style (still works)
+# v0.2.0 style (still works - defaults to 'organize' command)
 zigstack /path/to/directory
 zigstack --move /path/to/directory
 zigstack --by-date --move /path
@@ -79,21 +119,16 @@ zigstack organize --by-date --move /path
 zigstack organize --verbose --dry-run /path
 ```
 
-Both styles produce identical results. The command-based interface is optional and provides a foundation for future commands while ensuring existing scripts and workflows remain unaffected.
+Both styles produce identical results. The command-based interface provides a foundation for advanced functionality while ensuring existing scripts and workflows remain unaffected.
 
 #### Migration Guide
 
 **No migration required!** Your existing scripts, aliases, and workflows will continue to work without any changes.
 
-If you want to use the new command-based interface:
-- Simply prefix your existing commands with `organize`
-- All flags and options remain the same
-- Help is available with `zigstack organize --help`
-
-**Future commands** (planned for future releases):
-- `zigstack stats` - Analyze directory statistics
-- `zigstack search` - Search for files by various criteria
-- `zigstack compare` - Compare directory structures
+To use the new commands:
+- All commands follow the pattern: `zigstack <command> [OPTIONS] <directory>`
+- Use `zigstack <command> --help` for command-specific help
+- See the [docs/](docs/) directory for detailed command documentation
 
 ### Command-Line Options
 
@@ -118,37 +153,39 @@ If you want to use the new command-based interface:
 
 ### Examples
 
-#### Preview File Organization (Default Mode)
+#### Organize Command Examples
+
+**Preview File Organization (Default Mode)**
 ```bash
 # Analyze a directory and show how files would be organized
 zigstack /path/to/directory
 
-# Same as above with explicit dry-run flag
-zigstack --dry-run /path/to/directory
+# Same as above with explicit command
+zigstack organize --dry-run /path/to/directory
 ```
 
-#### Create Directories Only
+**Create Directories Only**
 ```bash
 # Create category directories without moving files
-zigstack --create /path/to/directory
+zigstack organize --create /path/to/directory
 ```
 
-#### Full Organization (Create and Move)
+**Full Organization (Create and Move)**
 ```bash
 # Create directories and move files into them
-zigstack --move /path/to/directory
+zigstack organize --move /path/to/directory
 ```
 
-#### Using Custom Configuration
+**Using Custom Configuration**
 ```bash
 # Use a custom configuration file for categorization
-zigstack --config my-config.json --move /path/to/directory
+zigstack organize --config my-config.json --move /path/to/directory
 ```
 
-#### Verbose Output
+**Verbose Output**
 ```bash
 # Get detailed information about operations
-zigstack --verbose --move /path/to/directory
+zigstack organize --verbose --move /path/to/directory
 ```
 
 #### Advanced Organization Examples
@@ -212,6 +249,125 @@ zigstack --by-date --date-format year-month-day \
          --by-size --size-threshold 100 \
          --recursive --max-depth 3 \
          --verbose --move /path/to/directory
+```
+
+#### Analyze Command Examples
+
+```bash
+# Basic disk usage analysis
+zigstack analyze /path/to/directory
+
+# Show top 20 largest files/directories
+zigstack analyze --top 20 /path/to/directory
+
+# Analyze with content metadata (image dimensions, video duration, etc.)
+zigstack analyze --content /path/to/media
+
+# Export analysis to JSON
+zigstack analyze --json --output report.json /path/to/directory
+
+# Analyze only files larger than 10MB
+zigstack analyze --min-size 10 /path/to/directory
+
+# Limit analysis depth
+zigstack analyze --max-depth 3 /path/to/directory
+```
+
+#### Dedupe Command Examples
+
+```bash
+# Find duplicates (dry-run mode, shows what would happen)
+zigstack dedupe /downloads
+
+# Interactive duplicate management
+zigstack dedupe --interactive /downloads
+
+# Automatically keep newest files, delete duplicates
+zigstack dedupe --auto keep-newest --delete /downloads
+
+# Replace duplicates with hardlinks (saves space)
+zigstack dedupe --auto keep-newest --hardlink /downloads
+
+# Export duplicate report to CSV
+zigstack dedupe --format csv --output duplicates.csv /downloads
+
+# Find duplicates only for files larger than 1MB
+zigstack dedupe --min-size 1048576 /media
+
+# Summary only, no actions
+zigstack dedupe --summary /documents
+```
+
+#### Archive Command Examples
+
+```bash
+# Archive files older than 6 months (dry-run)
+zigstack archive --older-than 6mo --dest ~/Archive /documents
+
+# Archive and move files older than 1 year
+zigstack archive --older-than 1y --move --dest ~/Archive /documents
+
+# Archive with original directory structure preserved
+zigstack archive --older-than 6mo --preserve-structure --dest ~/Archive /documents
+
+# Archive to compressed tar.gz file
+zigstack archive --older-than 1y --compress tar.gz --dest ~/Archive /documents
+
+# Archive only specific categories
+zigstack archive --older-than 3mo --categories "videos,images" --dest ~/Archive /media
+
+# Archive only large files
+zigstack archive --older-than 6mo --min-size 100 --dest ~/Archive /documents
+```
+
+#### Watch Command Examples
+
+```bash
+# Watch ~/Downloads directory
+zigstack watch ~/Downloads
+
+# Watch with custom rules file
+zigstack watch --rules watch-rules.json ~/Downloads
+
+# Validate rules file without running
+zigstack watch --validate-rules --rules watch-rules.json
+
+# Watch with custom interval (check every 10 seconds)
+zigstack watch --interval 10 ~/Downloads
+
+# Watch with date-based organization
+zigstack watch --by-date --date-format year-month ~/Documents
+
+# Watch with verbose logging
+zigstack watch --verbose --log ~/zigstack-watch.log ~/Downloads
+```
+
+#### Workspace Command Examples
+
+```bash
+# Scan workspace for projects
+zigstack workspace scan ~/Code
+
+# Scan with custom inactive threshold (90 days)
+zigstack workspace scan --inactive-days 90 ~/Projects
+
+# Export workspace report as JSON
+zigstack workspace scan --json --output workspace-report.json ~/Code
+
+# Preview cleanup (dry-run)
+zigstack workspace cleanup --dry-run ~/Code
+
+# Cleanup with moderate strategy
+zigstack workspace cleanup --strategy moderate ~/Code
+
+# Cleanup only inactive projects
+zigstack workspace cleanup --strategy aggressive --inactive-only ~/Code
+
+# Cleanup only Node.js projects
+zigstack workspace cleanup --project-type nodejs --artifacts-only ~/Code
+
+# Cleanup dependencies only (keep build artifacts)
+zigstack workspace cleanup --deps-only --inactive-only ~/Code
 ```
 
 ### Example Output
@@ -569,13 +725,19 @@ zigstack robustly handles various edge cases:
 
 ## Version History
 
-- **v0.3.0** (In Development): Command infrastructure and backward compatibility (Issues #17, #18, #19)
-  - **Command-based interface**: New subcommand system with `organize` command
+- **v0.3.0** (Current): Complete command system with six powerful commands
+  - **Six Commands**: organize, analyze, dedupe, archive, watch, and workspace
+  - **analyze command**: Disk usage analysis with visualization, content metadata, and JSON export
+  - **dedupe command**: Interactive duplicate management with hardlink support and CSV export
+  - **archive command**: Age-based file archiving with compression (tar.gz) and structure preservation
+  - **watch command**: File system monitoring with automatic organization and custom rules
+  - **workspace command**: Developer workspace management with project detection and cleanup strategies
   - **100% backward compatibility**: All v0.2.0 CLI patterns continue to work unchanged
   - **Modular architecture**: Refactored codebase with separate command and core modules
-  - **Enhanced testing**: 20+ new tests for command routing and backward compatibility
-  - **Future-ready**: Foundation for additional commands (stats, search, compare, etc.)
-  - **Comprehensive documentation**: Updated README with migration guide and examples
+  - **Enhanced testing**: 50+ tests covering all commands, backward compatibility, and edge cases
+  - **Export functionality**: JSON and CSV export for analyze and dedupe commands
+  - **Rule-based automation**: Custom rules engine for watch command (see examples/WATCH_RULES.md)
+  - **Comprehensive documentation**: Complete docs/ directory with tutorials and reference guides
 
 - **v0.2.0**: Advanced organization features (Issue #8)
   - **Date-based organization**: Organize files by creation/modification time with configurable date formats
